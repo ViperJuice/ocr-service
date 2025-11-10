@@ -1,0 +1,48 @@
+{
+  "name": "ocr-service-web",
+  "version": "0.1.0",
+  "description": "Web interface for OCR Service",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "baml:generate": "npx @boundaryml/baml generate"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@boundaryml/baml": "latest",
+    "@monaco-editor/react": "^4.7.0",
+    "@tanstack/react-query": "^5.90.7",
+    "@types/jszip": "^3.4.0",
+    "@types/node": "^24.10.0",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "framer-motion": "^12.23.24",
+    "jszip": "^3.10.1",
+    "lucide-react": "^0.553.0",
+    "next": "^16.0.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-dropzone": "^14.3.8",
+    "react-markdown": "^10.1.0",
+    "recharts": "^3.3.0",
+    "remark-gfm": "^4.0.1",
+    "tailwind-merge": "^3.3.1",
+    "typescript": "^5.9.3",
+    "zustand": "^5.0.8"
+  },
+  "devDependencies": {
+    "@tailwindcss/typography": "^0.5.19",
+    "autoprefixer": "^10.4.21",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^3.4.18"
+  },
+  "optionalDependencies": {
+    "@boundaryml/baml-linux-x64-gnu": "^0.213.0"
+  }
+}

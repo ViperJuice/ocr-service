@@ -1,0 +1,10 @@
+[
+  {
+    "dpi": 300,
+    "page_size": "legal",
+    "peak_memory_gb": 0.0,
+    "model_name": "qwen2-vl-7b",
+    "crop_mode": true,
+    "timestamp": 1762545487.4239366
+  }
+]

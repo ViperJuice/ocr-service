@@ -1,0 +1,481 @@
+"""Batch job lifecycle management service."""
+import uuid
+import threading
+import logging
+import asyncio
+from pathlib import Path
+from datetime import datetime
+from typing import Dict, List, Optional, Any
+
+from ..models.batch import BatchJob, BatchJobStatus, BatchProgress
+
+logger = logging.getLogger(__name__)
+
+
+def _run_async_in_thread(coro):
+    """
+    Safely run async coroutine from a thread.
+
+    Creates a new event loop for the thread to avoid conflicts.
+
+    Args:
+        coro: Coroutine to run
+    """
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
+class BatchManager:
+    """Manage batch job lifecycle and processing."""
+
+    def __init__(
+        self,
+        processing_directory: str,
+        output_directory: str,
+        max_concurrent_batches: int = 1
+    ):
+        """
+        Initialize batch manager.
+
+        Args:
+            processing_directory: Directory for active processing
+            output_directory: Directory for completed results
+            max_concurrent_batches: Maximum concurrent batch jobs
+        """
+        self.processing_directory = Path(processing_directory)
+        self.output_directory = Path(output_directory)
+        self.max_concurrent_batches = max_concurrent_batches
+
+        self.processing_directory.mkdir(parents=True, exist_ok=True)
+        self.output_directory.mkdir(parents=True, exist_ok=True)
+
+        # In-memory batch registry
+        self.batches: Dict[str, BatchJob] = {}
+        self.batch_lock = threading.Lock()
+
+        # Processing threads
+        self.processing_threads: Dict[str, threading.Thread] = {}
+
+        logger.info(f"BatchManager initialized: processing={processing_directory}, output={output_directory}")
+
+    def create_batch_job(
+        self,
+        directory_id: str,
+        file_ids: List[str],
+        model: str,
+        prompt_type: str,
+        custom_prompts: Optional[Dict[str, str]],
+        processing_options: Dict[str, Any],
+        output_format: str
+    ) -> BatchJob:
+        """
+        Create a new batch job for directory processing.
+
+        Args:
+            directory_id: Directory identifier
+            file_ids: List of file IDs to process
+            model: Model to use
+            prompt_type: Prompt type
+            custom_prompts: Optional custom prompts
+            processing_options: Processing options
+            output_format: Output format
+
+        Returns:
+            BatchJob object
+        """
+        batch_job_id = str(uuid.uuid4())
+
+        with self.batch_lock:
+            batch = BatchJob(
+                batch_job_id=batch_job_id,
+                directory_id=directory_id,
+                file_ids=file_ids,
+                document_jobs={},
+                total_documents=len(file_ids),
+                documents_completed=0,
+                overall_progress_pct=0.0,
+                status=BatchJobStatus.QUEUED,
+                created_at=datetime.utcnow(),
+                model=model,
+                prompt_type=prompt_type,
+                custom_prompts=custom_prompts,
+                processing_options=processing_options,
+                output_format=output_format
+            )
+            self.batches[batch_job_id] = batch
+
+        logger.info(f"Batch job created: {batch_job_id} with {len(file_ids)} documents")
+        return batch
+
+    def start_batch_job(
+        self,
+        batch_job_id: str,
+        file_manager,
+        job_manager,
+        prompt_manager,
+        model_manager,
+        progress_emitter
+    ) -> None:
+        """
+        Start processing a batch job asynchronously.
+
+        Args:
+            batch_job_id: Batch job identifier
+            file_manager: FileManager instance
+            job_manager: JobManager instance
+            prompt_manager: PromptManager instance
+            model_manager: ModelManager instance
+            progress_emitter: ProgressEmitter instance
+        """
+        batch = self.get_batch_job(batch_job_id)
+
+        # Update status
+        with self.batch_lock:
+            batch.status = BatchJobStatus.PROCESSING
+            batch.started_at = datetime.utcnow()
+
+        # Create processing thread
+        thread = threading.Thread(
+            target=self._process_batch_async,
+            args=(batch, file_manager, job_manager, prompt_manager, model_manager, progress_emitter),
+            daemon=True
+        )
+
+        self.processing_threads[batch_job_id] = thread
+        thread.start()
+
+        logger.info(f"Batch job processing started: {batch_job_id}")
+
+    def _process_batch_async(
+        self,
+        batch: BatchJob,
+        file_manager,
+        job_manager,
+        prompt_manager,
+        model_manager,
+        progress_emitter
+    ) -> None:
+        """
+        Process batch job asynchronously (runs in background thread).
+
+        Args:
+            batch: BatchJob object
+            file_manager: FileManager instance
+            job_manager: JobManager instance
+            prompt_manager: PromptManager instance
+            model_manager: ModelManager instance
+            progress_emitter: ProgressEmitter instance
+        """
+        try:
+            logger.info(f"Starting batch processing: {batch.batch_job_id}")
+
+            # Process each document in sequence
+            for idx, file_id in enumerate(batch.file_ids):
+                # Check for cancellation
+                if batch.cancel_requested:
+                    with self.batch_lock:
+                        batch.status = BatchJobStatus.CANCELLED
+                        batch.completed_at = datetime.utcnow()
+                    logger.info(f"Batch job cancelled: {batch.batch_job_id}")
+                    return
+
+                # Get file info
+                file_info = file_manager.get_file_info(file_id)
+
+                # Create individual job for this document
+                job = job_manager.create_job(
+                    file_id=file_id,
+                    filename=file_info.filename,
+                    model=batch.model,
+                    prompt_type=batch.prompt_type,
+                    custom_prompts=batch.custom_prompts,
+                    processing_options=batch.processing_options,
+                    output_format=batch.output_format,
+                    estimated_pages=file_info.page_count
+                )
+
+                # Add job to batch's document jobs
+                with self.batch_lock:
+                    batch.document_jobs[job.job_id] = job
+
+                # Set up progress callback for this job
+                def progress_callback(progress_pct: float, pages_completed: int, stage: str):
+                    """Progress callback for individual document processing."""
+                    # Update job progress
+                    job_manager.update_job_progress(job.job_id, progress_pct, pages_completed, stage)
+
+                    # Emit document progress
+                    _run_async_in_thread(
+                        progress_emitter.emit_document_progress(
+                            batch_job_id=batch.batch_job_id,
+                            job_id=job.job_id,
+                            filename=file_info.filename,
+                            progress_pct=progress_pct,
+                            current_page=pages_completed,
+                            total_pages=file_info.page_count or 1,
+                            stage=stage
+                        )
+                    )
+
+                    # Calculate and emit batch progress
+                    batch_progress_pct = ((idx + (progress_pct / 100.0)) / batch.total_documents) * 100.0
+
+                    with self.batch_lock:
+                        batch.overall_progress_pct = batch_progress_pct
+
+                    current_doc_progress = {
+                        "job_id": job.job_id,
+                        "filename": file_info.filename,
+                        "progress_pct": progress_pct,
+                        "current_page": pages_completed,
+                        "total_pages": file_info.page_count or 1,
+                        "stage": stage
+                    }
+
+                    _run_async_in_thread(
+                        progress_emitter.emit_batch_progress(
+                            batch_job_id=batch.batch_job_id,
+                            overall_progress_pct=batch_progress_pct,
+                            documents_completed=idx,
+                            total_documents=batch.total_documents,
+                            current_document_id=job.job_id,
+                            current_document_progress=current_doc_progress
+                        )
+                    )
+
+                # Set progress callback in job manager
+                job_manager.set_progress_callback(job.job_id, progress_callback)
+
+                # Start processing this document
+                logger.info(f"Processing document {idx + 1}/{batch.total_documents}: {file_info.filename}")
+                job_manager.start_job(
+                    job_id=job.job_id,
+                    file_manager=file_manager,
+                    prompt_manager=prompt_manager,
+                    model_manager=model_manager
+                )
+
+                # Wait for document to complete
+                while True:
+                    job = job_manager.get_job(job.job_id)
+                    if job.status.value in ['completed', 'failed', 'cancelled']:
+                        break
+                    threading.Event().wait(1)  # Check every second
+
+                # Update batch completion count
+                with self.batch_lock:
+                    if job.status.value == 'completed':
+                        batch.documents_completed += 1
+                    elif job.status.value == 'failed':
+                        logger.error(f"Document failed in batch: {file_info.filename}: {job.error}")
+                        # Continue processing other documents even if one fails
+
+                logger.info(f"Document completed: {file_info.filename} ({batch.documents_completed}/{batch.total_documents})")
+
+            # All documents processed
+            with self.batch_lock:
+                batch.status = BatchJobStatus.COMPLETED
+                batch.completed_at = datetime.utcnow()
+                batch.overall_progress_pct = 100.0
+
+            # Emit completion event
+            processing_time = 0.0
+            if batch.started_at and batch.completed_at:
+                processing_time = (batch.completed_at - batch.started_at).total_seconds()
+
+            batch_stats = {
+                "total_documents": batch.total_documents,
+                "documents_completed": batch.documents_completed,
+                "documents_failed": batch.total_documents - batch.documents_completed,
+                "overall_processing_time_seconds": processing_time
+            }
+
+            _run_async_in_thread(
+                progress_emitter.emit_completion(
+                    job_id=batch.batch_job_id,
+                    is_batch=True,
+                    batch_stats=batch_stats
+                )
+            )
+
+            logger.info(f"Batch job completed successfully: {batch.batch_job_id}")
+
+        except Exception as e:
+            logger.error(f"Batch job processing failed: {batch.batch_job_id}: {e}", exc_info=True)
+
+            # Update batch status to failed
+            with self.batch_lock:
+                batch.status = BatchJobStatus.FAILED
+                batch.completed_at = datetime.utcnow()
+                batch.error = str(e)
+
+            # Emit error
+            _run_async_in_thread(
+                progress_emitter.emit_error(
+                    job_id=batch.batch_job_id,
+                    error_message=str(e),
+                    is_batch=True,
+                    batch_job_id=batch.batch_job_id
+                )
+            )
+
+        finally:
+            # Cleanup thread reference
+            with self.batch_lock:
+                if batch.batch_job_id in self.processing_threads:
+                    del self.processing_threads[batch.batch_job_id]
+
+    def get_batch_job(self, batch_job_id: str) -> BatchJob:
+        """
+        Get batch job by ID.
+
+        Args:
+            batch_job_id: Batch job identifier
+
+        Returns:
+            BatchJob object
+
+        Raises:
+            ValueError: If batch job not found
+        """
+        with self.batch_lock:
+            if batch_job_id not in self.batches:
+                raise ValueError(f"Batch job not found: {batch_job_id}")
+            return self.batches[batch_job_id]
+
+    def cancel_batch_job(self, batch_job_id: str) -> bool:
+        """
+        Cancel a running batch job.
+
+        Args:
+            batch_job_id: Batch job identifier
+
+        Returns:
+            True if cancelled successfully
+
+        Raises:
+            ValueError: If batch job not found or already completed
+        """
+        batch = self.get_batch_job(batch_job_id)
+
+        if batch.status == BatchJobStatus.COMPLETED:
+            raise ValueError("Cannot cancel completed batch job")
+
+        if batch.status == BatchJobStatus.FAILED:
+            raise ValueError("Cannot cancel failed batch job")
+
+        if batch.status == BatchJobStatus.CANCELLED:
+            return True  # Already cancelled
+
+        # Set cancellation flag
+        with self.batch_lock:
+            batch.cancel_requested = True
+
+        # Wait for thread to finish (with timeout)
+        if batch_job_id in self.processing_threads:
+            thread = self.processing_threads[batch_job_id]
+            thread.join(timeout=10)
+
+            if thread.is_alive():
+                logger.warning(f"Batch job thread did not terminate cleanly: {batch_job_id}")
+
+        # Update status if not already updated by thread
+        with self.batch_lock:
+            if batch.status != BatchJobStatus.CANCELLED:
+                batch.status = BatchJobStatus.CANCELLED
+                batch.completed_at = datetime.utcnow()
+
+        logger.info(f"Batch job cancelled: {batch_job_id}")
+        return True
+
+    def get_batch_result(self, batch_job_id: str) -> Dict[str, Any]:
+        """
+        Get batch job results (all document results).
+
+        Args:
+            batch_job_id: Batch job identifier
+
+        Returns:
+            Result dict with all document results
+
+        Raises:
+            ValueError: If batch job not found or not completed
+        """
+        batch = self.get_batch_job(batch_job_id)
+
+        if batch.status != BatchJobStatus.COMPLETED:
+            raise ValueError(f"Batch job not completed: {batch.status.value}")
+
+        # Collect results from all document jobs
+        results = []
+        for job_id, job in batch.document_jobs.items():
+            if job.status.value == 'completed' and job.result_path and job.result_path.exists():
+                # Read result file
+                with open(job.result_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+
+                results.append({
+                    "job_id": job_id,
+                    "filename": job.filename,
+                    "format": job.output_format,
+                    "content": content,
+                    "total_pages": job.total_pages,
+                    "status": "completed"
+                })
+            elif job.status.value == 'failed':
+                results.append({
+                    "job_id": job_id,
+                    "filename": job.filename,
+                    "status": "failed",
+                    "error": job.error
+                })
+
+        # Calculate processing time
+        processing_time = 0.0
+        if batch.started_at and batch.completed_at:
+            processing_time = (batch.completed_at - batch.started_at).total_seconds()
+
+        return {
+            "batch_job_id": batch_job_id,
+            "total_documents": batch.total_documents,
+            "documents_completed": batch.documents_completed,
+            "results": results,
+            "overall_processing_time_seconds": processing_time
+        }
+
+    def cleanup_old_batches(self, max_batches: int) -> int:
+        """
+        Clean up old completed/failed batch jobs.
+
+        Args:
+            max_batches: Maximum number of batch jobs to keep
+
+        Returns:
+            Number of batches cleaned up
+        """
+        with self.batch_lock:
+            # Sort batches by creation time
+            sorted_batches = sorted(
+                self.batches.values(),
+                key=lambda b: b.created_at,
+                reverse=True
+            )
+
+            # Keep only completed/failed batches beyond max
+            batches_to_remove = []
+            for batch in sorted_batches[max_batches:]:
+                if batch.status in [BatchJobStatus.COMPLETED, BatchJobStatus.FAILED, BatchJobStatus.CANCELLED]:
+                    batches_to_remove.append(batch.batch_job_id)
+
+            # Remove batches
+            for batch_id in batches_to_remove:
+                del self.batches[batch_id]
+
+            if batches_to_remove:
+                logger.info(f"Cleaned up {len(batches_to_remove)} old batch jobs")
+
+            return len(batches_to_remove)

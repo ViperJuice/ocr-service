@@ -1,0 +1,85 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyTorch
+*.pth
+*.pt
+*.bin
+*.safetensors
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+.env
+logs/
+data/cache/
+data/output/
+data/uploads/
+data/results/
+data/jobs/
+data/temp/
+offload_cache/
+*.log
+
+# Model cache (optional - uncomment if you want to exclude model downloads)
+# .cache/
+# models/
+
+# Test outputs
+test_outputs/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Node.js / Next.js
+web/node_modules/
+web/.next/
+web/out/
+web/build/
+web/.env.local
+web/.env.development.local
+web/.env.test.local
+web/.env.production.local
+
+# BAML generated files
+web/baml_client/
+
+# npm/yarn
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Vercel
+web/.vercel

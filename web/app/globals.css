@@ -1,0 +1,267 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 13 13 13;
+    --foreground: 245 245 245;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-text-primary;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-background-secondary;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-surface-hover rounded;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-surface-active;
+  }
+}
+
+@layer components {
+  /* Glass effect for modals and overlays */
+  .glass {
+    background: rgba(26, 26, 26, 0.8);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+  }
+
+  /* Chat bubble styles */
+  .chat-bubble-user {
+    @apply bg-primary/20 border border-primary/30 rounded-lg px-4 py-2 max-w-[80%] ml-auto;
+  }
+
+  .chat-bubble-system {
+    @apply bg-surface border border-border rounded-lg px-4 py-2 max-w-[80%];
+  }
+
+  /* Glow effect for interactive elements */
+  .glow-on-hover {
+    transition: box-shadow 0.3s ease;
+  }
+
+  .glow-on-hover:hover {
+    box-shadow: 0 0 20px rgba(139, 92, 246, 0.3);
+  }
+
+  /* Progress bar */
+  .progress-bar {
+    @apply relative h-2 bg-surface rounded-full overflow-hidden;
+  }
+
+  .progress-fill {
+    @apply h-full bg-gradient-to-r from-primary to-accent-blue transition-all duration-300;
+  }
+
+  /* Drop zone styles */
+  .drop-zone {
+    @apply border-2 border-dashed border-border rounded-lg p-8 transition-all duration-200;
+  }
+
+  .drop-zone-active {
+    @apply border-primary bg-primary/5 shadow-glow;
+  }
+
+  /* Code block styling for markdown */
+  .prose pre {
+    @apply bg-surface border border-border rounded-lg;
+  }
+
+  .prose code {
+    @apply text-accent-cyan bg-surface/50 px-1 py-0.5 rounded text-sm;
+  }
+
+  /* === FILE DROP STYLES === */
+  .chat-input-container {
+    @apply relative;
+  }
+
+  .drag-overlay {
+    @apply absolute inset-0 bg-primary/10 border-2 border-dashed border-primary rounded-lg;
+    @apply flex items-center justify-center z-10 pointer-events-none;
+    animation: pulse 2s ease-in-out infinite;
+  }
+
+  .drag-overlay-text {
+    @apply text-lg font-semibold text-primary;
+  }
+
+  /* File preview in chat input */
+  .file-preview {
+    @apply flex items-center gap-2 p-2 bg-primary/10 border border-primary/30 rounded-md;
+    @apply transition-all duration-200;
+  }
+
+  .file-preview-single {
+    @apply border-l-4 border-l-primary;
+  }
+
+  .file-preview-batch {
+    @apply border-l-4 border-l-purple-500;
+  }
+
+  .file-preview-item {
+    @apply text-sm text-text-secondary flex items-center gap-1;
+  }
+
+  /* === INLINE PROGRESS STYLES === */
+  .inline-progress-container {
+    @apply mt-3 p-3 bg-primary/10 border-l-4 border-l-primary rounded-md;
+    animation: slide-in 0.3s ease-out;
+  }
+
+  .inline-progress-bar {
+    @apply h-2 bg-primary/20 rounded-sm overflow-hidden;
+  }
+
+  .inline-progress-fill {
+    @apply h-full bg-primary transition-all duration-300;
+  }
+
+  /* === BATCH PROGRESS STYLES === */
+  .batch-progress-card {
+    @apply mt-4 p-4 bg-purple-500/10 border border-purple-500/30 rounded-lg;
+    animation: slide-in 0.3s ease-out;
+  }
+
+  .document-progress-item {
+    @apply p-2 mt-2 bg-white/5 rounded-md border border-transparent transition-all duration-200;
+  }
+
+  .document-progress-item:hover {
+    @apply bg-white/10 border-primary/30;
+  }
+
+  /* === STAGE COLORS === */
+  .stage-ocr {
+    @apply text-blue-400;
+  }
+
+  .stage-merge {
+    @apply text-purple-400;
+  }
+
+  .stage-format {
+    @apply text-green-400;
+  }
+}
+
+@layer utilities {
+  .text-gradient {
+    @apply bg-gradient-to-r from-primary to-accent-blue bg-clip-text text-transparent;
+  }
+
+  .animate-shimmer {
+    animation: shimmer 2s linear infinite;
+    background-size: 200% 100%;
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+@keyframes slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+/* Typography improvements */
+h1, h2, h3, h4, h5, h6 {
+  @apply font-semibold tracking-tight;
+}
+
+/* Improved markdown rendering */
+.markdown-content {
+  @apply prose prose-invert max-w-none;
+}
+
+.markdown-content h1 {
+  @apply text-3xl font-bold mb-4 text-text-primary;
+}
+
+.markdown-content h2 {
+  @apply text-2xl font-bold mb-3 text-text-primary;
+}
+
+.markdown-content h3 {
+  @apply text-xl font-bold mb-2 text-text-primary;
+}
+
+.markdown-content p {
+  @apply mb-4 leading-7 text-text-secondary;
+}
+
+.markdown-content ul, .markdown-content ol {
+  @apply mb-4 ml-6;
+}
+
+.markdown-content li {
+  @apply mb-2;
+}
+
+.markdown-content code {
+  @apply bg-surface px-1.5 py-0.5 rounded text-sm text-accent-cyan;
+}
+
+.markdown-content pre code {
+  @apply bg-transparent p-0;
+}
+
+.markdown-content blockquote {
+  @apply border-l-4 border-primary pl-4 italic text-text-muted;
+}
+
+.markdown-content a {
+  @apply text-primary hover:text-primary-hover underline;
+}
+
+.markdown-content table {
+  @apply w-full border-collapse mb-4;
+}
+
+.markdown-content th, .markdown-content td {
+  @apply border border-border px-4 py-2;
+}
+
+.markdown-content th {
+  @apply bg-surface font-semibold;
+}
