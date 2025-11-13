@@ -157,3 +157,16 @@ class BatchResultResponse(BaseModel):
     documents_completed: int
     results: List[Dict[str, Any]]
     overall_processing_time_seconds: float
+
+
+class StreamResultEvent(BaseModel):
+    """SSE event for streaming results."""
+    event: Literal["ocr_page_complete", "merge_page_complete", "stage_complete", "job_complete"]
+    data: Dict[str, Any]
+
+
+class OcrOutputResponse(BaseModel):
+    """Response for OCR intermediate output."""
+    job_id: str
+    pages: List[Dict[str, Any]]
+    total_pages: int

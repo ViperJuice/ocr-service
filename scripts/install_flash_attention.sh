@@ -130,7 +130,7 @@ print_fallback_instructions() {
     echo
     echo "Edit config/model_configs.yaml and comment out the following lines:"
     echo
-    echo "For Qwen2-VL-7B (line 17):"
+    echo "For Qwen3-VL-8B (line 17):"
     echo "  # _attn_implementation: \"flash_attention_2\""
     echo
     echo "For DeepSeek-OCR (line 80):"

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 import logging
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -277,6 +278,111 @@ class MonitoringService:
             log_files.sort(key=lambda x: Path(x).stat().st_mtime, reverse=True)
             return Path(log_files[0])
 
+    async def _fetch_container_info(self, url: str, container_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetch info from a container endpoint.
+
+        Args:
+            url: Container /info endpoint URL
+            container_name: Name for logging (e.g., "deepseek", "qwen")
+
+        Returns:
+            Container info dict or None if unavailable
+        """
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                response = await client.get(url)
+                if response.status_code == 200:
+                    return response.json()
+                else:
+                    logger.warning(f"{container_name} container returned status {response.status_code}")
+        except httpx.ConnectError:
+            logger.debug(f"{container_name} container not reachable at {url}")
+        except Exception as e:
+            logger.warning(f"Failed to fetch {container_name} container info: {e}")
+        return None
+
+    async def get_system_metrics_async(
+        self,
+        system_monitor,
+        job_manager,
+        model_manager=None,
+        deepseek_url: str = "http://localhost:8001",
+        qwen_url: str = "http://localhost:8002"
+    ) -> dict:
+        """
+        Get current system-wide metrics including container info.
+
+        Args:
+            system_monitor: SystemMonitor instance
+            job_manager: JobManager instance
+            model_manager: ModelManager instance (optional)
+            deepseek_url: DeepSeek container base URL
+            qwen_url: Qwen container base URL
+
+        Returns:
+            Dictionary with complete system metrics
+        """
+        # Get base system metrics
+        metrics = system_monitor.get_current_system_metrics()
+
+        # Add queue stats
+        metrics["queue"] = job_manager.get_queue_stats()
+
+        # Add active model info if available
+        if model_manager and hasattr(model_manager, 'current_model'):
+            model = model_manager.current_model
+            if model:
+                metrics["active_model"] = {
+                    "model_id": getattr(model, 'model_id', 'unknown'),
+                    "load_time_seconds": getattr(model, '_load_time', 0.0),
+                    "memory_footprint_gb": getattr(model, '_memory_footprint', 0.0)
+                }
+
+        # Add DeepSeek params if available (from current processing job)
+        active_jobs = [j for j in job_manager.jobs.values()
+                       if j.status.value == "PROCESSING"]
+        if active_jobs:
+            job = active_jobs[0]
+            if job.processing_options:
+                metrics["deepseek_params"] = {
+                    "dpi": job.processing_options.get("dpi", 300),
+                    "resolution_mode": "quality" if job.processing_options.get("prefer_quality") else "standard",
+                    "image_width": job.processing_options.get("image_width", 0),
+                    "image_height": job.processing_options.get("image_height", 0)
+                }
+
+        # Fetch container metrics
+        containers = {}
+
+        # Fetch DeepSeek info
+        deepseek_info = await self._fetch_container_info(f"{deepseek_url}/info", "deepseek")
+        if deepseek_info:
+            containers["deepseek"] = {
+                "status": "loaded" if deepseek_info.get("model_loaded") else "unloaded",
+                "model": deepseek_info.get("model_id"),
+                "gpu_ids": deepseek_info.get("gpu_ids", []),
+                "available": True
+            }
+        else:
+            containers["deepseek"] = {"status": "unavailable", "available": False}
+
+        # Fetch Qwen info
+        qwen_info = await self._fetch_container_info(f"{qwen_url}/info", "qwen")
+        if qwen_info:
+            containers["qwen"] = {
+                "status": "loaded" if qwen_info.get("model_loaded") else "unloaded",
+                "model": qwen_info.get("model_id"),
+                "gpu_ids": qwen_info.get("gpu_ids", []),
+                "available": True
+            }
+        else:
+            containers["qwen"] = {"status": "unavailable", "available": False}
+
+        metrics["containers"] = containers
+
+        return metrics
+
     def get_system_metrics(
         self,
         system_monitor,
@@ -284,7 +390,7 @@ class MonitoringService:
         model_manager=None
     ) -> dict:
         """
-        Get current system-wide metrics.
+        Get current system-wide metrics (synchronous wrapper).
 
         Args:
             system_monitor: SystemMonitor instance

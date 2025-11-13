@@ -21,15 +21,15 @@ export function SystemMonitorWidget({ enabled, isExpanded, onToggle }: SystemMon
   if (!enabled) return null;
 
   // Determine badge color based on alerts
-  const badgeColor = alerts.some((a) => a.type === "critical")
+  const badgeColor = alerts.some((a) => a.type === "error")
     ? "bg-red-500 hover:bg-red-600"
     : alerts.some((a) => a.type === "warning")
     ? "bg-yellow-500 hover:bg-yellow-600"
     : "bg-green-500 hover:bg-green-600";
 
   // Get primary GPU memory for badge
-  const gpuMemory = current?.gpus[0]
-    ? (current.gpus[0].memory_percent * 100).toFixed(0)
+  const gpuMemory = current?.gpus?.[0]
+    ? ((current.gpus[0].memory_used_mb / current.gpus[0].memory_total_mb) * 100).toFixed(0)
     : "--";
 
   return (
@@ -60,7 +60,7 @@ export function SystemMonitorWidget({ enabled, isExpanded, onToggle }: SystemMon
           bg-gray-900 text-white
           overflow-y-auto
           transition-all duration-300 ease-in-out
-          ${isExpanded ? 'w-96' : 'w-0'}
+          ${isExpanded ? 'flex-1' : 'w-0'}
         `}
       >
         {/* Header - shows when expanded */}

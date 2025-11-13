@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import time
 import logging
 import torch
+import asyncio
 
 from .pdf_handler import PDFHandler
 from .checkpoint_manager import CheckpointManager
@@ -14,6 +15,38 @@ from ..utils.system_monitor import SystemMonitor
 from ..utils.memory_profiler import MemoryProfiler
 
 logger = logging.getLogger(__name__)
+
+
+def run_async_in_thread(coro):
+    """
+    Run async coroutine in a thread-safe manner.
+
+    This creates a new event loop in the current thread if one doesn't exist,
+    or runs the coroutine in the existing loop if available.
+    """
+    try:
+        # Try to get existing event loop
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # If loop is running (shouldn't happen in thread), create new loop
+            raise RuntimeError("Loop is running")
+        return loop.run_until_complete(coro)
+    except RuntimeError:
+        # No event loop or loop is running - create a new one
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        try:
+            result = new_loop.run_until_complete(coro)
+            # Allow pending tasks to complete before closing
+            pending = asyncio.all_tasks(new_loop)
+            if pending:
+                new_loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            return result
+        finally:
+            # Give the loop a moment to clean up
+            new_loop.run_until_complete(asyncio.sleep(0))
+            new_loop.close()
+            asyncio.set_event_loop(None)
 
 
 @dataclass
@@ -49,7 +82,9 @@ class StagedPipelineProcessor:
         enable_system_monitoring: bool = True,
         monitor_interval: int = 30,
         prefer_quality: bool = True,
-        progress_callback: Optional[Any] = None
+        progress_callback: Optional[Any] = None,
+        result_emitter: Optional[Any] = None,
+        job_id: Optional[str] = None
     ):
         """
         Initialize staged pipeline processor.
@@ -63,6 +98,8 @@ class StagedPipelineProcessor:
             monitor_interval: Monitoring interval in seconds
             prefer_quality: Prefer quality over speed
             progress_callback: Optional callback function(progress_pct, pages_completed, stage)
+            result_emitter: Optional ResultEmitter for streaming results
+            job_id: Optional job identifier for result emission
         """
         self.model_manager = model_manager
         self.pdf_handler = pdf_handler
@@ -72,6 +109,8 @@ class StagedPipelineProcessor:
         self.monitor_interval = monitor_interval
         self.prefer_quality = prefer_quality
         self.progress_callback = progress_callback
+        self.result_emitter = result_emitter
+        self.job_id = job_id
 
         # Will be initialized in process_pdf()
         self.gpu_strategy_manager = None
@@ -155,33 +194,63 @@ class StagedPipelineProcessor:
             self.system_monitor = SystemMonitor(output_path, interval=self.monitor_interval, job_id=job_id)
             self.system_monitor.start()
 
-        # Initialize GPU strategy manager
-        self.gpu_strategy_manager = GPUStrategyManager(
-            self.model_manager,
-            strategy_preference="auto",
-            verbose=self.verbose,
-            enable_inference_profiling=self.enable_memory_profiling
-        )
-
-        # Run preflight validation for all stages
-        if self.verbose:
-            print("\n[Preflight Validation] Testing configurations for all stages...")
-
-        try:
-            stage_configs = self.gpu_strategy_manager.run_staged_pipeline_preflight(
-                dpi=dpi,
-                prefer_quality=self.prefer_quality
+        # Initialize GPU strategy manager (skip in container mode)
+        if not self.model_manager.use_containers:
+            self.gpu_strategy_manager = GPUStrategyManager(
+                self.model_manager,
+                strategy_preference="auto",
+                verbose=self.verbose,
+                enable_inference_profiling=self.enable_memory_profiling
             )
-        except RuntimeError as e:
-            if self.verbose:
-                print(f"\n[Preflight Failed] {e}")
-            raise
 
-        if self.verbose:
-            print("\n[Preflight Complete] Validated configurations:")
-            for stage_name, config in stage_configs.items():
-                print(f"  {stage_name.upper()}: {config['model_name']} on {config['strategy_type']}")
-                print(f"    Quality: {config['quality_score']:.1f}, Peak: {config['actual_peak_gb']:.2f}GB")
+            # Set result emitter and job ID on model manager for model loading progress
+            self.model_manager.result_emitter = self.result_emitter
+            self.model_manager.job_id = job_id
+
+            # Run preflight validation for all stages
+            if self.verbose:
+                print("\n[Preflight Validation] Testing configurations for all stages...")
+
+            try:
+                stage_configs = self.gpu_strategy_manager.run_staged_pipeline_preflight(
+                    dpi=dpi,
+                    prefer_quality=self.prefer_quality
+                )
+            except RuntimeError as e:
+                if self.verbose:
+                    print(f"\n[Preflight Failed] {e}")
+                raise
+
+            if self.verbose:
+                print("\n[Preflight Complete] Validated configurations:")
+                for stage_name, config in stage_configs.items():
+                    print(f"  {stage_name.upper()}: {config['model_name']} on {config['strategy_type']}")
+                    print(f"    Quality: {config['quality_score']:.1f}, Peak: {config['actual_peak_gb']:.2f}GB")
+        else:
+            # Container mode: Use simplified config
+            if self.verbose:
+                print("\n[Container Mode] Using containerized inference servers")
+
+            stage_configs = {
+                "ocr": {
+                    "model_name": "deepseek-ocr",
+                    "strategy_type": "container",
+                    "quality_score": 100.0,
+                    "actual_peak_gb": 0.0,
+                    "resolution_mode": "quality" if self.prefer_quality else "standard",
+                    "crop_mode": True
+                },
+                "merge": {
+                    "model_name": "qwen3-vl-8b" if self.prefer_quality else "qwen3-vl-4b",
+                    "strategy_type": "container",
+                    "quality_score": 100.0,
+                    "actual_peak_gb": 0.0
+                }
+            }
+
+            if self.verbose:
+                print(f"  OCR: {stage_configs['ocr']['model_name']} (container)")
+                print(f"  MERGE: {stage_configs['merge']['model_name']} (container)")
 
         # Extract PDF data
         pages_data = self.pdf_handler.extract_hybrid_data(
@@ -217,6 +286,10 @@ class StagedPipelineProcessor:
                 # Mark stage complete
                 self.checkpoint_manager.complete_stage("ocr")
 
+                # Emit stage complete
+                if self.result_emitter and self.job_id:
+                    self.result_emitter.emit_stage_complete(self.job_id, "ocr")
+
             # Stage 2: Merge
             if self.verbose:
                 print(f"\n{'='*60}")
@@ -236,12 +309,20 @@ class StagedPipelineProcessor:
             # Mark stage complete
             self.checkpoint_manager.complete_stage("merge")
 
+            # Emit stage complete
+            if self.result_emitter and self.job_id:
+                self.result_emitter.emit_stage_complete(self.job_id, "merge")
+
             # Clear checkpoint and cache on success
             self.checkpoint_manager.clear()
             self.intermediate_cache.clear()
 
             # Emit final completion (100%)
             self._emit_progress(100.0, total_pages, "complete")
+
+            # Emit job complete
+            if self.result_emitter and self.job_id:
+                self.result_emitter.emit_job_complete(self.job_id)
 
             total_time = time.time() - overall_start
 
@@ -266,11 +347,27 @@ class StagedPipelineProcessor:
             }
 
         finally:
-            # Cleanup
-            if self.system_monitor:
-                self.system_monitor.stop()
-            if self.gpu_strategy_manager:
-                self.gpu_strategy_manager.cleanup()
+            # Cleanup (always attempt, even on error)
+            try:
+                if self.system_monitor:
+                    self.system_monitor.stop()
+            except Exception as e:
+                logger.warning(f"Error stopping system monitor: {e}")
+
+            try:
+                if self.gpu_strategy_manager:
+                    self.gpu_strategy_manager.cleanup()
+                    logger.info("GPU strategy manager cleaned up")
+            except Exception as e:
+                logger.error(f"Error during GPU strategy cleanup: {e}")
+
+            # Failsafe: explicitly unload all models
+            try:
+                if self.model_manager:
+                    self.model_manager.unload_all()
+                    logger.info("Failsafe: all models unloaded")
+            except Exception as e:
+                logger.error(f"Error in failsafe model unload: {e}")
 
     def _run_ocr_stage(
         self,
@@ -291,16 +388,48 @@ class StagedPipelineProcessor:
         Returns:
             StageResult with stage metrics
         """
-        # Initialize GPU strategy for OCR stage
-        self.gpu_strategy_manager.initialize_for_stage_processing(
-            stage_name="ocr",
-            model_name=stage_config["model_name"],
-            dpi=dpi,
-            deepseek_resolution_mode=stage_config.get("resolution_mode"),
-            disable_crop_mode=not stage_config.get("crop_mode", True),
-            prefer_quality=self.prefer_quality,
-            use_validation_based_selection=False  # Already validated
-        )
+        model = None
+        primary_device = 0
+
+        if not self.model_manager.use_containers:
+            # Local mode: Initialize GPU strategy and load model
+            self.gpu_strategy_manager.initialize_for_stage_processing(
+                stage_name="ocr",
+                model_name=stage_config["model_name"],
+                dpi=dpi,
+                deepseek_resolution_mode=stage_config.get("resolution_mode"),
+                disable_crop_mode=not stage_config.get("crop_mode", True),
+                prefer_quality=self.prefer_quality,
+                use_validation_based_selection=False  # Already validated
+            )
+
+            # Get model for OCR
+            model = self.gpu_strategy_manager.get_model_for_task("ocr")
+
+            # Set model info in system monitor
+            if self.system_monitor:
+                model_id = getattr(model, 'model_id', 'unknown')
+                device_map = getattr(model.model, 'hf_device_map', None) if hasattr(model, 'model') else None
+                self.system_monitor.set_model_info(
+                    model_type=stage_config["model_name"],
+                    model_id=model_id,
+                    device_map=device_map
+                )
+
+            # Get primary device for health checks
+            primary_device = self.gpu_strategy_manager.get_primary_device()
+        else:
+            # Container mode: Initialize HTTP client
+            if self.model_manager.http_client_manager is None:
+                logger.info("Initializing container mode for OCR stage...")
+                asyncio.run(self.model_manager.initialize_container_mode())
+
+            if self.system_monitor:
+                self.system_monitor.set_model_info(
+                    model_type=stage_config["model_name"],
+                    model_id="container",
+                    device_map=None
+                )
 
         # Update system monitor
         if self.system_monitor:
@@ -320,22 +449,6 @@ class StagedPipelineProcessor:
         total_pages = len(pages_data)
         stage_start = time.time()
 
-        # Get model for OCR
-        model = self.gpu_strategy_manager.get_model_for_task("ocr")
-
-        # Set model info in system monitor
-        if self.system_monitor:
-            model_id = getattr(model, 'model_id', 'unknown')
-            device_map = getattr(model.model, 'hf_device_map', None) if hasattr(model, 'model') else None
-            self.system_monitor.set_model_info(
-                model_type=stage_config["model_name"],
-                model_id=model_id,
-                device_map=device_map
-            )
-
-        # Get primary device for health checks
-        primary_device = self.gpu_strategy_manager.get_primary_device()
-
         # Process each page
         for idx in range(start_page, total_pages):
             embedded_text, image, has_text = pages_data[idx]
@@ -346,17 +459,18 @@ class StagedPipelineProcessor:
             if self.system_monitor:
                 self.system_monitor.update_page_timing(page_start)
 
-            # Per-page GPU health check
-            self._check_gpu_health_before_page(
-                device_id=primary_device,
-                required_gb=stage_config['actual_peak_gb'],
-                page_num=page_num,
-                stage_name="ocr"
-            )
+            # Per-page GPU health check (skip in container mode)
+            if not self.model_manager.use_containers:
+                self._check_gpu_health_before_page(
+                    device_id=primary_device,
+                    required_gb=stage_config['actual_peak_gb'],
+                    page_num=page_num,
+                    stage_name="ocr"
+                )
 
-            # Optional: Log detailed memory snapshot
-            if self.enable_memory_profiling:
-                self._log_page_memory(primary_device, page_num, "ocr")
+                # Optional: Log detailed memory snapshot
+                if self.enable_memory_profiling:
+                    self._log_page_memory(primary_device, page_num, "ocr")
 
             if self.verbose:
                 progress_pct = ((idx + 1) / total_pages) * 100
@@ -367,9 +481,20 @@ class StagedPipelineProcessor:
                 overall_pct = (idx + 1) / total_pages * 50.0  # Stage 1 = 50% of overall
                 self.system_monitor.update_stage_progress(idx, overall_pct)
 
-            # Run OCR
+            # Run OCR (container mode or local)
             page_start = time.time()
-            ocr_model_result = model.process_image(image, prompt_type="ocr", prompts=self.custom_prompts)
+
+            if self.model_manager.use_containers:
+                # Use container inference
+                ocr_model_result = run_async_in_thread(self.model_manager.infer_with_container(
+                    model_name=stage_config["model_name"],
+                    image=image,
+                    prompt_type="ocr"
+                ))
+            else:
+                # Use local model
+                ocr_model_result = model.process_image(image, prompt_type="ocr", prompts=self.custom_prompts)
+
             ocr_text = ocr_model_result.text or ""
             page_time = time.time() - page_start
 
@@ -386,6 +511,10 @@ class StagedPipelineProcessor:
                 }
             )
             self.intermediate_cache.save_ocr_result(idx, ocr_result)
+
+            # Emit OCR result to SSE clients
+            if self.result_emitter and self.job_id:
+                self.result_emitter.emit_ocr_page(self.job_id, page_num, ocr_text)
 
             # Save checkpoint
             stage_metadata = {
@@ -467,18 +596,46 @@ class StagedPipelineProcessor:
         Returns:
             StageResult with stage metrics
         """
-        # Unload OCR model first (if loaded)
-        if self.model_manager.current_model_name:
-            self.model_manager.unload_model(self.model_manager.current_model_name)
+        model = None
+        primary_device = 0
 
-        # Initialize GPU strategy for merge stage
-        self.gpu_strategy_manager.initialize_for_stage_processing(
-            stage_name="merge",
-            model_name=stage_config["model_name"],
-            dpi=dpi,
-            prefer_quality=self.prefer_quality,
-            use_validation_based_selection=False  # Already validated
-        )
+        if not self.model_manager.use_containers:
+            # Local mode: Unload OCR model and load merge model
+            if self.model_manager.current_model_name:
+                self.model_manager.unload_model(self.model_manager.current_model_name)
+
+            # Initialize GPU strategy for merge stage
+            self.gpu_strategy_manager.initialize_for_stage_processing(
+                stage_name="merge",
+                model_name=stage_config["model_name"],
+                dpi=dpi,
+                prefer_quality=self.prefer_quality,
+                use_validation_based_selection=False  # Already validated
+            )
+
+            # Get model for merge
+            model = self.gpu_strategy_manager.get_model_for_task("merge")
+
+            # Set model info in system monitor
+            if self.system_monitor:
+                model_id = getattr(model, 'model_id', 'unknown')
+                device_map = getattr(model.model, 'hf_device_map', None) if hasattr(model, 'model') else None
+                self.system_monitor.set_model_info(
+                    model_type=stage_config["model_name"],
+                    model_id=model_id,
+                    device_map=device_map
+                )
+
+            # Get primary device for health checks
+            primary_device = self.gpu_strategy_manager.get_primary_device()
+        else:
+            # Container mode: HTTP client already initialized
+            if self.system_monitor:
+                self.system_monitor.set_model_info(
+                    model_type=stage_config["model_name"],
+                    model_id="container",
+                    device_map=None
+                )
 
         # Update system monitor
         if self.system_monitor:
@@ -498,22 +655,6 @@ class StagedPipelineProcessor:
         total_pages = len(pages_data)
         stage_start = time.time()
 
-        # Get model for merge
-        model = self.gpu_strategy_manager.get_model_for_task("merge")
-
-        # Set model info in system monitor
-        if self.system_monitor:
-            model_id = getattr(model, 'model_id', 'unknown')
-            device_map = getattr(model.model, 'hf_device_map', None) if hasattr(model, 'model') else None
-            self.system_monitor.set_model_info(
-                model_type=stage_config["model_name"],
-                model_id=model_id,
-                device_map=device_map
-            )
-
-        # Get primary device for health checks
-        primary_device = self.gpu_strategy_manager.get_primary_device()
-
         # Process each page
         for idx in range(start_page, total_pages):
             embedded_text, image, has_text = pages_data[idx]
@@ -524,17 +665,18 @@ class StagedPipelineProcessor:
             if self.system_monitor:
                 self.system_monitor.update_page_timing(page_start)
 
-            # Per-page GPU health check
-            self._check_gpu_health_before_page(
-                device_id=primary_device,
-                required_gb=stage_config['actual_peak_gb'],
-                page_num=page_num,
-                stage_name="merge"
-            )
+            # Per-page GPU health check (skip in container mode)
+            if not self.model_manager.use_containers:
+                self._check_gpu_health_before_page(
+                    device_id=primary_device,
+                    required_gb=stage_config['actual_peak_gb'],
+                    page_num=page_num,
+                    stage_name="merge"
+                )
 
-            # Optional: Log detailed memory snapshot
-            if self.enable_memory_profiling:
-                self._log_page_memory(primary_device, page_num, "merge")
+                # Optional: Log detailed memory snapshot
+                if self.enable_memory_profiling:
+                    self._log_page_memory(primary_device, page_num, "merge")
 
             if self.verbose:
                 progress_pct = ((idx + 1) / total_pages) * 100
@@ -550,14 +692,49 @@ class StagedPipelineProcessor:
             if not ocr_result:
                 raise RuntimeError(f"Missing OCR result for page {idx}")
 
-            # Run merge
+            # Run merge (container mode or local)
             page_start = time.time()
-            merge_model_result = model.merge_texts(
-                image=image,
-                embedded_text=embedded_text or "",
-                ocr_text=ocr_result.ocr_text,
-                prompts=self.custom_prompts
-            )
+
+            if self.model_manager.use_containers:
+                # Use container inference
+                # Build merge prompt with embedded and OCR text
+                merge_prompt_template = self.custom_prompts.get("merge") if self.custom_prompts else None
+                if not merge_prompt_template:
+                    # Use default merge prompt
+                    merge_prompt = f"""Compare and merge these two text versions from the same document page:
+
+Embedded Text (from PDF):
+{embedded_text or ""}
+
+OCR Text (from image):
+{ocr_result.ocr_text}
+
+Provide the most accurate merged version by combining both sources, fixing any OCR errors, and preserving layout. Return only the final text."""
+                else:
+                    merge_prompt = merge_prompt_template.format(
+                        embedded_text=embedded_text or "",
+                        ocr_text=ocr_result.ocr_text
+                    )
+
+                merge_model_result = run_async_in_thread(self.model_manager.infer_with_container(
+                    model_name=stage_config["model_name"],
+                    image=image,
+                    prompt=merge_prompt if "deepseek" in stage_config["model_name"].lower() else None,
+                    messages=[{
+                        "role": "user",
+                        "content": [{"type": "text", "text": merge_prompt}]
+                    }] if "qwen" in stage_config["model_name"].lower() else None,
+                    prompt_type="merge"
+                ))
+            else:
+                # Use local model
+                merge_model_result = model.merge_texts(
+                    image=image,
+                    embedded_text=embedded_text or "",
+                    ocr_text=ocr_result.ocr_text,
+                    prompts=self.custom_prompts
+                )
+
             merged_text = merge_model_result.text or ""
             page_time = time.time() - page_start
 
@@ -570,6 +747,10 @@ class StagedPipelineProcessor:
                 method="merge",
                 append=(idx > 0 or start_page > 0)
             )
+
+            # Emit merged result to SSE clients
+            if self.result_emitter and self.job_id:
+                self.result_emitter.emit_merge_page(self.job_id, page_num, merged_text)
 
             # Save checkpoint
             stage_metadata = {

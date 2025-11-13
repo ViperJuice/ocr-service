@@ -2,6 +2,18 @@
 
 This document explains the compatibility patches required for DeepSeek-OCR to work with transformers 4.57.1+.
 
+## 🆕 Latest Updates (2025-01-12)
+
+**Critical Fix: Vision Embedding Position IDs Extension**
+
+Today we discovered and fixed a critical issue where vision embeddings caused `position_ids` to be shorter than `hidden_states`, resulting in dimension mismatch errors (e.g., "size of tensor a (116) must match size of tensor b (115)").
+
+**Root Cause:** When DeepSeek-OCR processes images with text, it inserts vision embeddings into the sequence. The `prepare_inputs_for_generation` method computes `position_ids` based on `input_ids` length, but after vision features are inserted, `inputs_embeds` has a different (longer) sequence length.
+
+**Fix Applied:** Added position_ids extension logic in `DeepseekV2Model.forward()` to dynamically extend `position_ids` to match `hidden_states` sequence length when vision embeddings are present (lines 1613-1624 in modeling_deepseekv2.py).
+
+This fix is now included in both [`patch_deepseek_model.sh`](../patch_deepseek_model.sh) and the documentation below.
+
 ## Overview
 
 DeepSeek-OCR was developed for transformers 4.40.x and requires patches to work with 4.57.1+. The patches address breaking API changes in the transformers library while maintaining full functionality and actually improving performance.
@@ -233,15 +245,30 @@ if not config.use_mla:
     self.rotary_emb = LlamaRotaryEmbedding(config=config)
 ```
 
-**4. Compute position_embeddings in `DeepseekV2Model.forward()`:**
+**4. Compute position_embeddings in `DeepseekV2Model.forward()` with vision embedding support:**
 ```python
 # embed positions
 hidden_states = inputs_embeds
 
 # Compute position embeddings for LlamaAttention (transformers 4.57.1 compatibility)
 # LlamaAttention requires position_embeddings as a required parameter
+# LlamaRotaryEmbedding.forward(x, position_ids) returns (cos, sin) tuple
+# NOTE: position_ids may need to be adjusted to match hidden_states sequence length
+# (vision embeddings may cause hidden_states to be longer than position_ids)
 position_embeddings = None
 if not self.config.use_mla:
+    # Ensure position_ids matches hidden_states sequence length
+    if position_ids.shape[1] < hidden_states.shape[1]:
+        # Extend position_ids to match hidden_states length
+        # Use sequential positions for the additional tokens
+        seq_diff = hidden_states.shape[1] - position_ids.shape[1]
+        additional_pos = torch.arange(
+            position_ids[:, -1].item() + 1,
+            position_ids[:, -1].item() + 1 + seq_diff,
+            dtype=position_ids.dtype,
+            device=position_ids.device
+        ).unsqueeze(0)
+        position_ids = torch.cat([position_ids, additional_pos], dim=1)
     position_embeddings = self.rotary_emb(hidden_states, position_ids)
 ```
 
@@ -473,16 +500,18 @@ chmod +x patch_deepseek_model.sh
 ./patch_deepseek_model.sh
 ```
 
-### Issue: Size mismatch errors (277 vs 278)
+### Issue: Size mismatch errors (116 vs 115, 277 vs 278, etc.)
 
-**Symptom:** `RuntimeError: The size of tensor a (277) must match the size of tensor b (278)`
+**Symptom:** `RuntimeError: The size of tensor a (116) must match the size of tensor b (115)` or similar dimension mismatch errors during RoPE embedding computation
 
-**Cause:** `position_ids` not derived from `cache_position`
+**Cause:** Vision embeddings cause `hidden_states` to be longer than `position_ids`. The `prepare_inputs_for_generation` method computes `position_ids` based on `input_ids` length, but after vision features are inserted, `inputs_embeds` has a different sequence length.
 
-**Solution:** Ensure `fix_attention_mask.py` was run correctly. Re-run patches:
+**Solution:** The latest patches include position_ids extension logic. Re-run patches to apply the fix:
 ```bash
 ./patch_deepseek_model.sh
 ```
+
+After patching, the model will automatically extend `position_ids` to match `hidden_states` sequence length when vision embeddings are present.
 
 ### Issue: "Not enough values to unpack (expected 3, got 2)"
 

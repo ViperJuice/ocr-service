@@ -81,9 +81,9 @@ def mock_model_manager():
             "capabilities": ["ocr"],
             "default": True
         },
-        "qwen2-vl-7b": {
-            "model_id": "qwen2-vl-7b",
-            "name": "Qwen2-VL 7B",
+        "qwen3-vl-8b": {
+            "model_id": "qwen3-vl-8b",
+            "name": "Qwen3-VL 8B",
             "capabilities": ["ocr", "markdown", "merge"],
             "default": False
         }

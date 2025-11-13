@@ -1,10 +1,12 @@
 """Processing API routes."""
 import logging
+import asyncio
+import json
 from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from .models import (
     JobSubmitRequest,
@@ -13,8 +15,10 @@ from .models import (
     JobStatusResponse,
     JobResultResponse,
     JobCancelResponse,
+    OcrOutputResponse,
 )
 from .services import FileManager, PromptManager, JobManager, JobStatus
+from .services.result_emitter import get_result_emitter
 
 logger = logging.getLogger(__name__)
 
@@ -330,4 +334,185 @@ async def cancel_job(
         job_id=job_id,
         status="cancelled",
         message="Job cancelled successfully"
+    )
+
+
+@router.get("/jobs/{job_id}/stream-results")
+async def stream_job_results(
+    job_id: str,
+    job_manager: JobManager = Depends(get_job_manager)
+):
+    """
+    Server-Sent Events (SSE) stream of page results as they complete.
+
+    Args:
+        job_id: Job ID
+
+    Returns:
+        SSE stream with ocr_page_complete, merge_page_complete, stage_complete events
+    """
+    # Verify job exists
+    try:
+        job = job_manager.get_job(job_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+
+    result_emitter = get_result_emitter()
+
+    async def event_generator():
+        """Generate SSE events for this job."""
+        client_queue = asyncio.Queue()
+
+        try:
+            # Register this client
+            await result_emitter.register_client(job_id, client_queue)
+            logger.info(f"[DEBUG SSE] Client connected and registered for job {job_id}")
+
+            # If job is already completed, send completion event
+            if job.status == JobStatus.COMPLETED:
+                event = {
+                    "event": "job_complete",
+                    "data": {"timestamp": job.completed_at.isoformat() + 'Z' if job.completed_at else ""}
+                }
+                yield f"event: {event['event']}\ndata: {json.dumps(event['data'])}\n\n"
+                return
+
+            # Stream events as they arrive
+            while True:
+                try:
+                    # Wait for next event with timeout
+                    event = await asyncio.wait_for(client_queue.get(), timeout=30.0)
+
+                    # Format as SSE
+                    event_type = event.get("event", "message")
+                    data = json.dumps(event.get("data", {}))
+                    logger.info(f"[DEBUG SSE] Sending event '{event_type}' to client for job {job_id}")
+                    yield f"event: {event_type}\ndata: {data}\n\n"
+
+                    # Exit if job complete
+                    if event_type == "job_complete":
+                        break
+
+                except asyncio.TimeoutError:
+                    # Send keepalive
+                    logger.debug(f"[DEBUG SSE] Sending keepalive for job {job_id}")
+                    yield ": keepalive\n\n"
+
+        except asyncio.CancelledError:
+            logger.info(f"SSE client disconnected for job {job_id}")
+        except Exception as e:
+            logger.error(f"Error in SSE stream for job {job_id}: {e}")
+            error_data = json.dumps({"error": str(e)})
+            yield f"event: error\ndata: {error_data}\n\n"
+        finally:
+            # Unregister client
+            await result_emitter.unregister_client(job_id, client_queue)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+
+@router.get("/jobs/{job_id}/ocr-output", response_model=OcrOutputResponse)
+async def get_ocr_output(
+    job_id: str,
+    job_manager: JobManager = Depends(get_job_manager)
+):
+    """
+    Get cached OCR intermediate results.
+
+    Args:
+        job_id: Job ID
+
+    Returns:
+        OcrOutputResponse with all OCR page results
+    """
+    try:
+        job = job_manager.get_job(job_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+
+    # Find intermediate cache directory
+    output_path = job.result_path or (job_manager.output_directory / job_id)
+    cache_dir = output_path.parent / f"{output_path.stem}.ocr_cache"
+
+    if not cache_dir.exists():
+        raise HTTPException(status_code=404, detail="OCR cache not found")
+
+    # Load all OCR results
+    from ...preprocessing.intermediate_cache import IntermediateCache
+    cache = IntermediateCache(cache_dir)
+
+    completed_pages = cache.list_completed_pages()
+    pages = []
+
+    for page_num in sorted(completed_pages):
+        ocr_result = cache.load_ocr_result(page_num)
+        if ocr_result:
+            pages.append({
+                "page_num": page_num + 1,  # Convert to 1-indexed
+                "text": ocr_result.ocr_text,
+                "processing_time": ocr_result.processing_time,
+                "metadata": ocr_result.metadata
+            })
+
+    return OcrOutputResponse(
+        job_id=job_id,
+        pages=pages,
+        total_pages=len(pages)
+    )
+
+
+@router.get("/jobs/{job_id}/original")
+async def get_original_file(
+    job_id: str,
+    file_manager: FileManager = Depends(get_file_manager),
+    job_manager: JobManager = Depends(get_job_manager)
+):
+    """
+    Return original uploaded file.
+
+    Args:
+        job_id: Job ID
+
+    Returns:
+        FileResponse with original file
+    """
+    try:
+        job = job_manager.get_job(job_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+
+    # Get original file
+    try:
+        file_path = file_manager.get_file_path(job.file_id)
+    except HTTPException as e:
+        if e.status_code == 404:
+            raise HTTPException(status_code=404, detail=f"Original file not found for job {job_id}")
+        raise
+
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Original file no longer exists")
+
+    # Determine media type from file extension
+    mime_type_map = {
+        ".pdf": "application/pdf",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".tiff": "image/tiff",
+        ".tif": "image/tiff"
+    }
+    media_type = mime_type_map.get(file_path.suffix.lower(), "application/octet-stream")
+
+    return FileResponse(
+        path=file_path,
+        media_type=media_type,
+        filename=job.filename
     )

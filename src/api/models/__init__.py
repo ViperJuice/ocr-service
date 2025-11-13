@@ -23,6 +23,7 @@ from .responses import (
     DirectoryUploadResponse,
     BatchJobResponse,
     BatchResultResponse,
+    OcrOutputResponse,
 )
 
 __all__ = [
@@ -49,4 +50,5 @@ __all__ = [
     "DirectoryUploadResponse",
     "BatchJobResponse",
     "BatchResultResponse",
+    "OcrOutputResponse",
 ]

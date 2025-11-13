@@ -15,6 +15,16 @@ export interface ProcessingOptions {
 
 export type CustomPrompts = Record<string, string>;
 
+export interface SavedPrompt {
+  id: string;
+  name: string;
+  category: string;
+  description: string;
+  prompts: CustomPrompts;
+  createdAt: number;
+  updatedAt: number;
+}
+
 // ============================================================================
 // File Upload Types
 // ============================================================================
@@ -88,6 +98,8 @@ export interface JobResult {
   result: {
     format: OutputFormat;
     content: string;
+    deepseek_ocr_content?: string;
+    original_file_url?: string;
     total_pages?: number;
     processing_time_seconds: number;
     model_used: string;
@@ -279,6 +291,49 @@ export interface ErrorEvent {
   };
 }
 
+// ============================================================================
+// Streaming Result Events (for real-time OCR/merge results)
+// ============================================================================
+
+export interface OcrPageCompleteEvent {
+  event: "ocr_page_complete";
+  data: {
+    page_num: number;
+    text: string;
+    timestamp: string;
+  };
+}
+
+export interface MergePageCompleteEvent {
+  event: "merge_page_complete";
+  data: {
+    page_num: number;
+    text: string;
+    timestamp: string;
+  };
+}
+
+export interface StageCompleteEvent {
+  event: "stage_complete";
+  data: {
+    stage: "ocr" | "merge";
+    timestamp: string;
+  };
+}
+
+export interface JobCompleteEvent {
+  event: "job_complete";
+  data: {
+    timestamp: string;
+  };
+}
+
+export type StreamResultEvent =
+  | OcrPageCompleteEvent
+  | MergePageCompleteEvent
+  | StageCompleteEvent
+  | JobCompleteEvent;
+
 export type SSEEvent =
   | JobProgressEvent
   | BatchProgressEvent
@@ -294,11 +349,12 @@ export interface SystemMetrics {
   timestamp: string;
   cpu_percent: number;
   memory_percent: number;
-  gpu_stats?: Array<{
-    index: number;
-    name: string;
+  gpus?: Array<{
+    id: number;
+    name?: string;
     memory_used_mb: number;
     memory_total_mb: number;
+    memory_percent: number;
     utilization_percent: number;
     temperature_c?: number;
   }>;

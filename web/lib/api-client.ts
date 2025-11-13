@@ -68,7 +68,7 @@ export async function uploadFile(file: File): Promise<FileMetadata> {
   const formData = new FormData();
   formData.append("file", file);
 
-  const response = await fetch(`${API_BASE_URL}/api/v1/processing/upload`, {
+  const response = await fetch(`${API_BASE_URL}/api/v1/process/upload`, {
     method: "POST",
     body: formData,
   });
@@ -127,7 +127,7 @@ export async function deleteFile(fileId: string): Promise<void> {
  * Submit a processing job.
  */
 export async function submitJob(request: JobSubmitRequest): Promise<JobCreatedResponse> {
-  const response = await fetch(`${API_BASE_URL}/api/v1/processing/process`, {
+  const response = await fetch(`${API_BASE_URL}/api/v1/process/jobs`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -142,7 +142,7 @@ export async function submitJob(request: JobSubmitRequest): Promise<JobCreatedRe
  * Get job status by job ID.
  */
 export async function getJobStatus(jobId: string): Promise<JobStatusResponse> {
-  const response = await fetch(`${API_BASE_URL}/api/v1/processing/jobs/${jobId}/status`);
+  const response = await fetch(`${API_BASE_URL}/api/v1/process/jobs/${jobId}`);
   return handleResponse<JobStatusResponse>(response);
 }
 
@@ -150,7 +150,7 @@ export async function getJobStatus(jobId: string): Promise<JobStatusResponse> {
  * Get job result by job ID.
  */
 export async function getJobResult(jobId: string): Promise<JobResult> {
-  const response = await fetch(`${API_BASE_URL}/api/v1/processing/jobs/${jobId}/result`);
+  const response = await fetch(`${API_BASE_URL}/api/v1/process/jobs/${jobId}/result`);
   return handleResponse<JobResult>(response);
 }
 
@@ -158,7 +158,7 @@ export async function getJobResult(jobId: string): Promise<JobResult> {
  * Cancel a running job.
  */
 export async function cancelJob(jobId: string): Promise<void> {
-  const response = await fetch(`${API_BASE_URL}/api/v1/processing/jobs/${jobId}/cancel`, {
+  const response = await fetch(`${API_BASE_URL}/api/v1/process/jobs/${jobId}/cancel`, {
     method: "POST",
   });
   await handleResponse(response);
@@ -168,11 +168,35 @@ export async function cancelJob(jobId: string): Promise<void> {
  * Download job result as a file.
  */
 export async function downloadResult(jobId: string): Promise<Blob> {
-  const response = await fetch(`${API_BASE_URL}/api/v1/processing/jobs/${jobId}/download`);
+  const response = await fetch(`${API_BASE_URL}/api/v1/process/jobs/${jobId}/result/download`);
   if (!response.ok) {
     throw new ApiError(`Download failed: ${response.status}`, response.status);
   }
   return response.blob();
+}
+
+/**
+ * Get DeepSeek-OCR intermediate output for a job.
+ */
+export async function getOcrOutput(jobId: string): Promise<{
+  job_id: string;
+  pages: Array<{
+    page_num: number;
+    text: string;
+    processing_time: number;
+    metadata: Record<string, any>;
+  }>;
+  total_pages: number;
+}> {
+  const response = await fetch(`${API_BASE_URL}/api/v1/process/jobs/${jobId}/ocr-output`);
+  return handleResponse(response);
+}
+
+/**
+ * Get URL for original uploaded file.
+ */
+export function getOriginalFileUrl(jobId: string): string {
+  return `${API_BASE_URL}/api/v1/process/jobs/${jobId}/original`;
 }
 
 // ============================================================================
@@ -286,6 +310,17 @@ export function createMonitoringStream(jobId?: string): EventSource {
   return new EventSource(url);
 }
 
+/**
+ * Create an EventSource connection for streaming OCR and merge results.
+ *
+ * This establishes a Server-Sent Events connection to receive real-time
+ * page results as they complete during processing.
+ */
+export function createResultStream(jobId: string): EventSource {
+  const url = `${API_BASE_URL}/api/v1/process/jobs/${jobId}/stream-results`;
+  return new EventSource(url);
+}
+
 // ============================================================================
 // Centralized API Client Object
 // ============================================================================
@@ -303,6 +338,8 @@ export const apiClient = {
   getJobResult,
   cancelJob,
   downloadResult,
+  getOcrOutput,
+  getOriginalFileUrl,
 
   // Batch operations
   submitBatchJob,
@@ -316,4 +353,5 @@ export const apiClient = {
   // SSE streaming
   createBatchProgressStream,
   createMonitoringStream,
+  createResultStream,
 };

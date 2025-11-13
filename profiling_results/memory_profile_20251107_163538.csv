@@ -1,4 +1,0 @@
-Model,DPI,Crop Mode,Strategy,Calc Base (GB),Calc Overhead (GB),Calc Peak (GB),Actual Load (GB),Actual Peak (GB),Forecast Error (%),Underestimated,Success,Error Message
-deepseek-ocr,300,No,single_gpu_sequential,6.0,4.43,10.43,0.0,0.0,N/A,Yes,No,'DeepSeekOCRModel' object has no attribute 'extract_text'
-qwen2-vl-2b,300,No,single_gpu_sequential,3.0,9.42,12.42,0.0,0.0,N/A,Yes,No,'QwenVLModel' object has no attribute 'generate'
-qwen2-vl-7b,300,No,single_gpu_sequential,13.0,9.42,22.42,0.0,0.0,N/A,Yes,No,'QwenVLModel' object has no attribute 'generate'

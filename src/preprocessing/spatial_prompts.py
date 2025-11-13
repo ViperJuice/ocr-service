@@ -8,3 +8,4 @@ class SpatialPromptBuilder:
         """Initialize spatial prompt builder."""
         pass
 
+

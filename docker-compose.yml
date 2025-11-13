@@ -1,0 +1,90 @@
+version: '3.8'
+
+services:
+  deepseek:
+    build:
+      context: ./containers/deepseek
+      dockerfile: Dockerfile
+    image: ocr-service/deepseek-ocr:latest
+    container_name: deepseek-ocr
+    ports:
+      - "8001:8001"
+    volumes:
+      - model-cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']  # GPU 0 - change as needed
+              capabilities: [gpu]
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - TRANSFORMERS_CACHE=/root/.cache/huggingface
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - CUDA_LAUNCH_BLOCKING=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s  # Give model time to load
+
+  qwen:
+    build:
+      context: ./containers/qwen
+      dockerfile: Dockerfile
+    image: ocr-service/qwen-vl:latest
+    container_name: qwen-vl
+    ports:
+      - "8002:8002"
+    volumes:
+      - model-cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']  # Can share GPU 0 or use ['1'] for GPU 1
+              capabilities: [gpu]
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - TRANSFORMERS_CACHE=/root/.cache/huggingface
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s  # Give model time to load
+
+volumes:
+  model-cache:
+    driver: local
+
+# For multi-GPU production, create docker-compose.prod.yml:
+#
+# services:
+#   deepseek:
+#     deploy:
+#       resources:
+#         reservations:
+#           devices:
+#             - driver: nvidia
+#               device_ids: ['0', '1']  # GPUs 0-1 for DeepSeek
+#               capabilities: [gpu]
+#     environment:
+#       - CUDA_VISIBLE_DEVICES=0,1
+#
+#   qwen:
+#     deploy:
+#       resources:
+#         reservations:
+#           devices:
+#             - driver: nvidia
+#               device_ids: ['2', '3']  # GPUs 2-3 for Qwen
+#               capabilities: [gpu]
+#     environment:
+#       - CUDA_VISIBLE_DEVICES=2,3

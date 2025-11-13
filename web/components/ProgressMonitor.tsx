@@ -21,7 +21,7 @@ export function ProgressMonitor({ jobId, filename, onComplete, onError }: Progre
 
   useEffect(() => {
     // Create SSE connection for real-time monitoring
-    const eventSource = apiClient.createMonitoringStream(jobId, 2);
+    const eventSource = apiClient.createMonitoringStream(jobId);
 
     eventSource.onmessage = (event) => {
       try {

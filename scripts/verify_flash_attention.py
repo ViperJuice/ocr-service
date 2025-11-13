@@ -428,7 +428,7 @@ Examples:
     print("  • 20-30% faster processing speeds")
     print("  • Better support for high-resolution documents")
     print("\nModels configured with FlashAttention 2:")
-    print("  • Qwen2-VL-7B")
+    print("  • Qwen3-VL-8B")
     print("  • DeepSeek-OCR")
     print("\nFor configuration details, see: config/model_configs.yaml")
 

@@ -36,3 +36,4 @@ class PageStructure:
     embedded_text: str = ""
     has_embedded_text: bool = False
 
+

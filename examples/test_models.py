@@ -3,8 +3,8 @@
 Test all three models to verify they load correctly.
 
 This script tests:
-- Qwen2-VL-2B
-- Qwen2-VL-7B  
+- Qwen3-VL-2B
+- Qwen3-VL-8B
 - DeepSeek-OCR
 
 Based on the test_large_models.py pattern from DeepSeek-OCR repo.

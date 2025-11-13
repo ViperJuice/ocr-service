@@ -118,17 +118,21 @@ export function SystemMonitor({
               <div className="w-full bg-gray-700 rounded-full h-2 overflow-hidden">
                 <div
                   className={`h-full transition-all duration-300 ${
-                    gpu.memory_percent >= 0.95
-                      ? "bg-red-500"
-                      : gpu.memory_percent >= 0.85
-                      ? "bg-yellow-500"
-                      : "bg-blue-500"
+                    (() => {
+                      // Normalize to 0-1 range (handle both 0-1 and 0-100 formats)
+                      const normalized = gpu.memory_percent > 1 ? gpu.memory_percent / 100 : gpu.memory_percent;
+                      return normalized >= 0.95
+                        ? "bg-red-500"
+                        : normalized >= 0.85
+                        ? "bg-yellow-500"
+                        : "bg-blue-500";
+                    })()
                   }`}
-                  style={{ width: `${gpu.memory_percent * 100}%` }}
+                  style={{ width: `${gpu.memory_percent > 1 ? gpu.memory_percent : gpu.memory_percent * 100}%` }}
                 />
               </div>
               <div className="text-right text-xs text-gray-400">
-                {(gpu.memory_percent * 100).toFixed(1)}%
+                {(gpu.memory_percent > 1 ? gpu.memory_percent : gpu.memory_percent * 100).toFixed(1)}%
               </div>
             </div>
 
@@ -156,11 +160,11 @@ export function SystemMonitor({
             <Cpu className="w-4 h-4 text-blue-400" />
             <span className="text-sm font-medium">CPU</span>
           </div>
-          <div className="text-2xl font-bold">{current.cpu_percent.toFixed(1)}%</div>
+          <div className="text-2xl font-bold">{current.cpu_percent?.toFixed(1) ?? "--"}%</div>
           <div className="w-full bg-gray-700 rounded-full h-1.5 mt-2">
             <div
               className="h-full bg-blue-500 transition-all duration-300"
-              style={{ width: `${current.cpu_percent}%` }}
+              style={{ width: `${current.cpu_percent ?? 0}%` }}
             />
           </div>
         </div>
@@ -170,14 +174,14 @@ export function SystemMonitor({
             <MemoryStick className="w-4 h-4 text-green-400" />
             <span className="text-sm font-medium">RAM</span>
           </div>
-          <div className="text-2xl font-bold">{current.ram_percent.toFixed(1)}%</div>
+          <div className="text-2xl font-bold">{current.ram_percent?.toFixed(1) ?? "--"}%</div>
           <div className="text-xs text-gray-400 mt-1">
-            {current.ram_used_gb.toFixed(1)} / {current.ram_total_gb.toFixed(1)} GB
+            {current.ram_used_gb?.toFixed(1) ?? "--"} / {current.ram_total_gb?.toFixed(1) ?? "--"} GB
           </div>
           <div className="w-full bg-gray-700 rounded-full h-1.5 mt-2">
             <div
               className="h-full bg-green-500 transition-all duration-300"
-              style={{ width: `${current.ram_percent}%` }}
+              style={{ width: `${current.ram_percent ?? 0}%` }}
             />
           </div>
         </div>

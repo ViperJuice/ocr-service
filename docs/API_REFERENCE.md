@@ -511,11 +511,11 @@ models.forEach(model => {
 {
   "models": [
     {
-      "model_id": "qwen2-vl-7b",
-      "name": "Qwen2-VL 7B",
+      "model_id": "qwen3-vl-8b",
+      "name": "Qwen3-VL 8B",
       "description": "Highest quality, best for production documents",
       "capabilities": ["ocr", "markdown", "merge", "structured"],
-      "estimated_memory_gb": 17.0,
+      "estimated_memory_gb": 18.0,
       "default": false
     },
     {

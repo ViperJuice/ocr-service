@@ -54,6 +54,24 @@ class Settings(BaseSettings):
         default="false",
         description="Enable tokenizers parallelism"
     )
+
+    # Container Mode Configuration
+    use_containers: bool = Field(
+        default=True,
+        description="Use containerized inference servers instead of local models"
+    )
+    deepseek_container_url: str = Field(
+        default="http://localhost:8001",
+        description="DeepSeek-OCR container base URL"
+    )
+    qwen_container_url: str = Field(
+        default="http://localhost:8002",
+        description="Qwen3-VL container base URL"
+    )
+    container_timeout: float = Field(
+        default=300.0,
+        description="Container inference timeout in seconds"
+    )
     
     # API Configuration
     api_host: str = Field(default="0.0.0.0", description="API server host")

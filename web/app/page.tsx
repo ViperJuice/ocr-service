@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
+import dynamic from "next/dynamic";
 import { MessageList } from "@/components/MessageList";
 import { ChatInput } from "@/components/ChatInput";
 import { ResultViewer } from "@/components/ResultViewer";
@@ -9,7 +10,7 @@ import { SystemMonitorWidget } from "@/components/SystemMonitorWidget";
 import { SettingsModal } from "@/components/SettingsModal";
 import { useOcrJob } from "@/hooks/useOcrJob";
 import { useBatchJob } from "@/hooks/useBatchJob";
-import { ChatMessage, OutputFormat } from "@/lib/types";
+import { ChatMessage, OutputFormat, ProcessingOptions } from "@/lib/types";
 import { generateId } from "@/lib/utils";
 import { parseCommand } from "@/lib/command-parser";
 import { orchestrateUserMessage, refactorPromptWithStreaming } from "@/app/actions/baml-actions";
@@ -21,12 +22,22 @@ import {
 } from "@/lib/batch-utils";
 import { FileText, Settings } from "lucide-react";
 
+// Dynamically import ReadingPanesView to avoid SSR issues with react-pdf
+const ReadingPanesView = dynamic(() => import("@/components/ReadingPanesView"), {
+  ssr: false,
+  loading: () => (
+    <div className="flex items-center justify-center h-full text-gray-500">
+      Loading reading panes...
+    </div>
+  ),
+});
+
 export default function Home() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [outputFormat, setOutputFormat] = useState<OutputFormat>("markdown");
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [monitoringEnabled, setMonitoringEnabled] = useState(false);
+  const [monitoringEnabled, setMonitoringEnabled] = useState(true);
   const [droppedFiles, setDroppedFiles] = useState<File[]>([]);
   const [uploadType, setUploadType] = useState<"single" | "batch" | "zip" | null>(null);
 
@@ -53,7 +64,7 @@ export default function Home() {
   } = useBatchJob();
 
   // Add message to chat
-  const addMessage = useCallback((role: "user" | "system", content: string, metadata?: any) => {
+  const addMessage = useCallback((role: "user" | "system" | "assistant", content: string, metadata?: any) => {
     const message: ChatMessage = {
       id: generateId(),
       role,
@@ -193,18 +204,32 @@ export default function Home() {
 
               addMessage("system", `Starting OCR with custom formatting instructions (confidence: ${refactored.confidence})...`);
 
+              // Clean nested processing_options to remove null values
+              let cleanedProcessingOptions = undefined;
+              if (orchestration.parameters.processing_options) {
+                cleanedProcessingOptions = Object.fromEntries(
+                  Object.entries(orchestration.parameters.processing_options).filter(([_, v]) => v !== null)
+                ) as ProcessingOptions;
+                if (Object.keys(cleanedProcessingOptions).length === 0) {
+                  cleanedProcessingOptions = undefined;
+                }
+              }
+
+              // Build custom prompts with only defined values
+              const customPrompts: Record<string, string> = {
+                ...orchestration.parameters.custom_prompts,
+              };
+              if (refactored.ocr_prompt) customPrompts.ocr = refactored.ocr_prompt;
+              if (refactored.merge_prompt) customPrompts.merge = refactored.merge_prompt;
+
               // BAML parameters now match backend API exactly - pass through directly
               submitJob({
                 file_id: currentFile.file_id,
-                model: orchestration.parameters.model,
-                prompt_type: orchestration.parameters.prompt_type,
-                output_format: orchestration.parameters.output_format || outputFormat,
-                processing_options: orchestration.parameters.processing_options,
-                custom_prompts: {
-                  ...orchestration.parameters.custom_prompts,
-                  ocr: refactored.ocr_prompt || undefined,
-                  merge: refactored.merge_prompt || undefined,
-                },
+                model: orchestration.parameters.model ?? undefined,
+                prompt_type: orchestration.parameters.prompt_type ?? undefined,
+                output_format: (orchestration.parameters.output_format || outputFormat) as OutputFormat,
+                processing_options: cleanedProcessingOptions,
+                custom_prompts: Object.keys(customPrompts).length > 0 ? customPrompts : undefined,
               });
             } else {
               // Simple job submission - BAML parameters match backend API exactly
@@ -428,14 +453,14 @@ export default function Home() {
   );
 
   // Dynamic width classes based on monitoring sidebar state
-  const [monitoringExpanded, setMonitoringExpanded] = useState(false);
+  const [monitoringExpanded, setMonitoringExpanded] = useState(true);
 
   const chatWidthClass = monitoringEnabled && monitoringExpanded
     ? "w-[20%]"
     : "w-1/3";
 
   const documentWidthClass = monitoringEnabled && monitoringExpanded
-    ? "w-[55%]"
+    ? "w-[60%]"
     : "w-2/3";
 
   return (
@@ -505,14 +530,12 @@ export default function Home() {
           />
         </div>
 
-        {/* Right panel - Result viewer */}
-        <div className={`${documentWidthClass} flex flex-col transition-all duration-300`}>
-          {jobResult ? (
-            <ResultViewer
-              content={jobResult.result.content}
-              format={outputFormat}
-              filename={currentFile?.filename || "result"}
-              onFormatChange={setOutputFormat}
+        {/* Right panel - Reading Panes View */}
+        <div className={`${documentWidthClass} flex flex-col h-full transition-all duration-300`}>
+          {currentJob ? (
+            <ReadingPanesView
+              jobId={currentJob.job_id}
+              enableStreaming={!jobResult}
             />
           ) : (
             <div className="flex-1 flex items-center justify-center text-center px-8">

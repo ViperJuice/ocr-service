@@ -191,10 +191,10 @@ async def health_check() -> Dict[str, str]:
 @router.get("/system/current")
 async def get_system_metrics():
     """
-    Get current system-wide metrics.
+    Get current system-wide metrics including container status.
 
     Returns:
-        SystemMetrics: Complete system snapshot
+        SystemMetrics: Complete system snapshot with container info
     """
     if not _system_monitor or not _job_manager:
         raise HTTPException(
@@ -203,7 +203,7 @@ async def get_system_metrics():
         )
 
     try:
-        metrics = monitoring_service.get_system_metrics(
+        metrics = await monitoring_service.get_system_metrics_async(
             system_monitor=_system_monitor,
             job_manager=_job_manager,
             model_manager=_model_manager
@@ -273,8 +273,8 @@ async def stream_system_metrics(
         """Generate SSE events."""
         try:
             while True:
-                # Get current metrics
-                metrics = monitoring_service.get_system_metrics(
+                # Get current metrics with container info
+                metrics = await monitoring_service.get_system_metrics_async(
                     system_monitor=_system_monitor,
                     job_manager=_job_manager,
                     model_manager=_model_manager

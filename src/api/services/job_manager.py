@@ -54,8 +54,7 @@ class JobManager:
         processing_directory: str,
         output_directory: str,
         max_concurrent_jobs: int = 2,
-        gpu_tracker=None,
-        system_capability: Optional[Dict] = None
+        result_emitter=None
     ):
         """
         Initialize job manager.
@@ -64,14 +63,12 @@ class JobManager:
             processing_directory: Directory for active processing
             output_directory: Directory for completed results
             max_concurrent_jobs: Maximum concurrent processing jobs
-            gpu_tracker: Optional GPUResourceTracker for VRAM management
-            system_capability: System capability info from CapabilityDetector
+            result_emitter: Optional ResultEmitter for streaming results
         """
         self.processing_directory = Path(processing_directory)
         self.output_directory = Path(output_directory)
         self.max_concurrent_jobs = max_concurrent_jobs
-        self.gpu_tracker = gpu_tracker
-        self.system_capability = system_capability
+        self.result_emitter = result_emitter
 
         self.processing_directory.mkdir(parents=True, exist_ok=True)
         self.output_directory.mkdir(parents=True, exist_ok=True)
@@ -223,75 +220,8 @@ class JobManager:
         logger.info(f"Job {job.job_id} waiting for processing slot...")
         self.job_semaphore.acquire()
 
-        vram_acquired = False
-
         try:
-            # Reserve GPU resources if tracker is available
-            if self.gpu_tracker and self.system_capability:
-                # Get VRAM requirements based on system capability tier
-                tier_info = self.system_capability.get("tier_info", {})
-                vram_requirements = tier_info.get("vram_requirements", {})
-
-                if not vram_requirements:
-                    logger.warning(
-                        f"Job {job.job_id}: No VRAM requirements found in tier info. "
-                        f"Using fallback default."
-                    )
-                    # Fallback: assume 14GB per GPU (Tier 1 estimate)
-                    gpu_count = self.system_capability.get("gpu_count", 2)
-                    vram_requirements = {gpu_id: 14.0 for gpu_id in range(gpu_count)}
-
-                tier = self.system_capability.get("max_tier", 1)
-                logger.info(
-                    f"Job {job.job_id} requesting VRAM for Tier {tier}: {vram_requirements}"
-                )
-
-                # Try to acquire VRAM with retry (wait for resources to become available)
-                max_wait_seconds = 600  # 10 minutes max wait
-                retry_interval = 5  # Check every 5 seconds
-                waited = 0
-
-                while waited < max_wait_seconds:
-                    vram_acquired = self.gpu_tracker.acquire(vram_requirements, job.job_id)
-
-                    if vram_acquired:
-                        logger.info(
-                            f"Job {job.job_id} acquired VRAM successfully at Tier {tier} "
-                            f"(waited {waited}s)"
-                        )
-                        break
-
-                    if waited == 0:
-                        logger.info(
-                            f"Job {job.job_id} waiting for VRAM (Tier {tier}). "
-                            f"GPU status: {self.gpu_tracker.get_status()}"
-                        )
-
-                    time.sleep(retry_interval)
-                    waited += retry_interval
-
-                    # Check for cancellation while waiting
-                    if job.cancel_requested:
-                        logger.info(f"Job {job.job_id} cancelled while waiting for VRAM")
-                        self.job_semaphore.release()
-                        with self.job_lock:
-                            job.status = JobStatus.CANCELLED
-                            job.completed_at = datetime.utcnow()
-                        return
-
-                if not vram_acquired:
-                    # Timeout after max wait
-                    logger.error(
-                        f"Job {job.job_id} timed out waiting for VRAM after {max_wait_seconds}s"
-                    )
-                    self.job_semaphore.release()
-                    with self.job_lock:
-                        job.status = JobStatus.FAILED
-                        job.completed_at = datetime.utcnow()
-                        job.error = f"Timed out waiting for GPU resources ({max_wait_seconds}s)"
-                    return
-
-            logger.info(f"Job {job.job_id} starting processing...")
+            logger.info(f"Job {job.job_id} starting processing (container mode)...")
             # Get file path
             file_path = file_manager.get_file_path(job.file_id)
 
@@ -326,7 +256,9 @@ class JobManager:
                 enable_memory_profiling=False,
                 enable_system_monitoring=True,
                 prefer_quality=job.processing_options.get('prefer_quality', True),
-                progress_callback=progress_callback
+                progress_callback=progress_callback,
+                result_emitter=self.result_emitter,
+                job_id=job.job_id
             )
 
             # Extract page range from processing options
@@ -348,6 +280,7 @@ class JobManager:
                 dpi=job.processing_options.get('dpi', 300),
                 output_format=job.output_format,
                 resume=False,  # API jobs don't support resume initially
+                job_id=job.job_id,
                 start_page=start_page,
                 end_page=end_page
             )
@@ -381,10 +314,15 @@ class JobManager:
                 job.error = str(e)
 
         finally:
-            # Release GPU resources if acquired
-            if vram_acquired and self.gpu_tracker:
-                self.gpu_tracker.release(job.job_id)
-                logger.info(f"Job {job.job_id} released VRAM")
+            # Unload models explicitly to free GPU memory
+            if model_manager:
+                try:
+                    model_manager.unload_all()
+                    logger.info(f"Job {job.job_id} unloaded all models")
+                except Exception as e:
+                    logger.warning(f"Failed to unload models for job {job.job_id}: {e}")
+
+            # GPU resources managed by containers
 
             # Release semaphore
             self.job_semaphore.release()
@@ -470,7 +408,28 @@ class JobManager:
         if job.started_at and job.completed_at:
             processing_time = (job.completed_at - job.started_at).total_seconds()
 
-        return {
+        # Try to load DeepSeek-OCR intermediate output
+        deepseek_ocr_content = None
+        cache_dir = job.result_path.parent / f"{job.result_path.stem}.ocr_cache"
+        if cache_dir.exists():
+            try:
+                from ...preprocessing.intermediate_cache import IntermediateCache
+                cache = IntermediateCache(cache_dir)
+                completed_pages = sorted(cache.list_completed_pages())
+
+                # Combine all OCR results
+                ocr_texts = []
+                for page_num in completed_pages:
+                    ocr_result = cache.load_ocr_result(page_num)
+                    if ocr_result:
+                        ocr_texts.append(f"--- Page {page_num + 1} ---\n{ocr_result.ocr_text}")
+
+                if ocr_texts:
+                    deepseek_ocr_content = "\n\n".join(ocr_texts)
+            except Exception as e:
+                logger.warning(f"Failed to load OCR cache for job {job_id}: {e}")
+
+        result = {
             "format": job.output_format,
             "content": content,
             "total_pages": job.total_pages,
@@ -482,6 +441,15 @@ class JobManager:
                 "pages_processed": job.total_pages or 0,
             }
         }
+
+        # Add optional fields
+        if deepseek_ocr_content:
+            result["deepseek_ocr_content"] = deepseek_ocr_content
+
+        # Add original file URL
+        result["original_file_url"] = f"/api/v1/process/jobs/{job_id}/original"
+
+        return result
 
     def update_job_progress(
         self,

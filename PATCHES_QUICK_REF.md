@@ -2,11 +2,15 @@
 
 **TL;DR:** DeepSeek-OCR needs patches for transformers 4.57.1+. Patches apply automatically on first load. See [docs/DEEPSEEK_OCR_PATCHES.md](docs/DEEPSEEK_OCR_PATCHES.md) for full details.
 
+## 🆕 Latest Update (2025-01-12)
+
+**Vision Embedding Position IDs Extension** - Fixed critical dimension mismatch error (116 vs 115) that occurred when processing images with text. The patch now automatically extends `position_ids` to match `hidden_states` sequence length when vision embeddings are inserted.
+
 ## Why Patches?
 
 - Qwen3-VL requires transformers >= 4.57.0 (cannot downgrade)
 - DeepSeek-OCR was built for transformers 4.40.x
-- 5 breaking API changes in transformers 4.57.1
+- 6 breaking API changes in transformers 4.57.1
 
 ## What Gets Patched?
 
@@ -17,6 +21,7 @@
 | Cache max | `past_key_values.get_max_length()` | `past_key_values.get_max_cache_shape()` |
 | Flash Attention | `LlamaFlashAttention2` | `LlamaAttention` |
 | Attention returns | 3 values | 2 values (MHA mode) |
+| Position IDs | Fixed length | Dynamic extension for vision embeddings |
 
 ## Quick Commands
 
@@ -60,7 +65,7 @@ uv run python test_qwen3.py
 | Error | Solution |
 |-------|----------|
 | `_prepare_4d_causal_attention_mask not found` | Run `./patch_deepseek_model.sh` |
-| Size mismatch (277 vs 278) | Run `./patch_deepseek_model.sh` |
+| Size mismatch (116 vs 115, 277 vs 278, etc.) | Run `./patch_deepseek_model.sh` (latest patches include position_ids extension) |
 | Not enough values to unpack (expected 3, got 2) | Run `./patch_deepseek_model.sh` |
 | Patches get overwritten | We use revision pinning to prevent this |
 

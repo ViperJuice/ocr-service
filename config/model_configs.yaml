@@ -73,7 +73,7 @@ models:
     trust_remote_code: true
     vram_requirement: "4-5GB"
     # REVISED memory requirements:
-    # - Model weights: 4-5 GB (slightly larger than Qwen2-VL-2B)
+    # - Model weights: 4-5 GB
     # - Runtime overhead at 300 DPI: +3.75 GB (merge task, simpler processing)
     # - Total peak: ~8-9 GB at 300 DPI
     # - Scales with DPI^2 (150 DPI: ~5 GB, 600 DPI: ~20 GB)

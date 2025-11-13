@@ -11,8 +11,8 @@ from pathlib import Path
 
 from config.settings import get_settings
 from .services import FileManager, PromptManager, JobManager, BatchManager, ProgressEmitter
-from .services.gpu_resource_tracker import GPUResourceTracker
-from .services.capability_detector import CapabilityDetector
+from .services.result_emitter import get_result_emitter
+# GPU resource tracking removed - using container mode only
 from ..utils.system_monitor import SystemMonitor
 from .middleware import (
     http_exception_handler,
@@ -31,8 +31,6 @@ batch_manager: BatchManager = None
 progress_emitter: ProgressEmitter = None
 model_manager = None
 system_monitor: SystemMonitor = None
-gpu_tracker: GPUResourceTracker = None
-system_capability: dict = None  # Detected system capability tier
 
 
 @asynccontextmanager
@@ -45,55 +43,10 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting OCR Service API...")
 
-    global file_manager, prompt_manager, job_manager, batch_manager, progress_emitter, model_manager, system_monitor, gpu_tracker, system_capability
+    global file_manager, prompt_manager, job_manager, batch_manager, progress_emitter, model_manager, system_monitor
     settings = get_settings()
 
-    # Initialize GPU resource tracker and detect system capabilities
-    try:
-        import torch
-        if torch.cuda.is_available():
-            gpu_count = torch.cuda.device_count()
-            # Reserve 2GB per GPU for overhead (CUDA context, PyTorch, etc.)
-            gpu_capacities = {}
-            for gpu_id in range(gpu_count):
-                total_vram_bytes = torch.cuda.get_device_properties(gpu_id).total_memory
-                total_vram_gb = total_vram_bytes / (1024 ** 3)
-                usable_vram_gb = total_vram_gb - 2.0  # 2GB overhead
-                gpu_capacities[gpu_id] = usable_vram_gb
-                logger.info(
-                    f"GPU {gpu_id} ({torch.cuda.get_device_name(gpu_id)}): "
-                    f"Total: {total_vram_gb:.1f}GB, Usable: {usable_vram_gb:.1f}GB"
-                )
-
-            # Detect maximum quality tier system can support
-            max_tier, tier_info = CapabilityDetector.detect_max_tier(gpu_capacities)
-            system_capability = {
-                "max_tier": max_tier,
-                "tier_info": tier_info,
-                "gpu_count": gpu_count,
-                "gpu_capacities": gpu_capacities
-            }
-
-            logger.info(
-                f"System capability: Tier {max_tier} ({tier_info['description']}) - "
-                f"ALL JOBS WILL RUN AT TIER {max_tier} (Quality-First Policy)"
-            )
-
-            gpu_tracker = GPUResourceTracker(gpu_capacities_gb=gpu_capacities)
-            logger.info(f"GPU resource tracking enabled for {gpu_count} GPU(s)")
-        else:
-            logger.warning("CUDA not available - GPU resource tracking disabled")
-            gpu_tracker = None
-            system_capability = {
-                "max_tier": 5,
-                "tier_info": {"tier": 5, "description": "CPU fallback"},
-                "gpu_count": 0,
-                "gpu_capacities": {}
-            }
-    except Exception as e:
-        logger.error(f"Failed to initialize GPU resource tracker: {e}")
-        gpu_tracker = None
-        system_capability = None
+    logger.info("Starting in CONTAINER MODE - GPU management handled by containers")
 
     # Initialize services
     file_manager = FileManager(
@@ -105,16 +58,22 @@ async def lifespan(app: FastAPI):
         model_configs_path=settings.model_configs_path
     )
 
+    # Initialize progress emitter for SSE streaming
+    progress_emitter = ProgressEmitter()
+
+    # Initialize result emitter for SSE streaming with event loop reference
+    import asyncio
+    loop = asyncio.get_running_loop()
+    result_emitter = get_result_emitter()
+    result_emitter._event_loop = loop  # Set the event loop for thread-safe operations
+    logger.info(f"ResultEmitter configured with event loop: {loop}")
+
     job_manager = JobManager(
         processing_directory=settings.api_processing_directory,
         output_directory=settings.api_output_directory,
-        max_concurrent_jobs=2,  # Limit concurrent jobs due to GPU memory
-        gpu_tracker=gpu_tracker,
-        system_capability=system_capability
+        max_concurrent_jobs=2,  # Limit concurrent jobs
+        result_emitter=result_emitter
     )
-
-    # Initialize progress emitter for SSE streaming
-    progress_emitter = ProgressEmitter()
 
     # Initialize batch manager
     batch_manager = BatchManager(
@@ -123,10 +82,21 @@ async def lifespan(app: FastAPI):
         max_concurrent_batches=1  # Process one batch at a time
     )
 
-    # Initialize model manager (lazy loading)
+    # Initialize model manager (container mode only)
     from ..models.model_manager import ModelManager
     model_configs = settings.load_model_configs()
-    model_manager = ModelManager(model_configs=model_configs['models'])
+    model_manager = ModelManager(
+        model_configs=model_configs['models']
+    )
+
+    # Initialize container mode
+    logger.info("Initializing container mode...")
+    await model_manager.initialize_container_mode(
+        deepseek_url=settings.deepseek_container_url,
+        qwen_url=settings.qwen_container_url,
+        timeout=settings.container_timeout
+    )
+    logger.info("✓ Container mode initialized successfully")
 
     # Initialize global system monitor for API
     system_monitor = SystemMonitor(
@@ -156,12 +126,12 @@ async def lifespan(app: FastAPI):
 
     # Cleanup resources
     if model_manager:
-        # Unload any loaded models
+        # Close container connections
         try:
-            if model_manager.current_model_name:
-                model_manager.unload_model(model_manager.current_model_name)
+            await model_manager.close_container_mode()
+            logger.info("Container mode connections closed")
         except Exception as e:
-            logger.error(f"Error unloading model during shutdown: {e}")
+            logger.error(f"Error closing container connections during shutdown: {e}")
 
     logger.info("OCR Service API shutdown complete")
 

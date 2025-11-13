@@ -41,12 +41,13 @@ export function MetricsTimeline({
 
     switch (metricType) {
       case "gpu_memory":
-        if (metrics.gpus[gpuId]) {
-          point.value = (metrics.gpus[gpuId].memory_percent * 100).toFixed(1);
+        if (metrics.gpus && metrics.gpus[gpuId]) {
+          const gpu = metrics.gpus[gpuId];
+          point.value = ((gpu.memory_used_mb / gpu.memory_total_mb) * 100).toFixed(1);
         }
         break;
       case "gpu_temp":
-        if (metrics.gpus[gpuId]) {
+        if (metrics.gpus && metrics.gpus[gpuId]) {
           point.value = metrics.gpus[gpuId].temperature_c;
         }
         break;
@@ -54,7 +55,7 @@ export function MetricsTimeline({
         point.value = metrics.cpu_percent.toFixed(1);
         break;
       case "ram":
-        point.value = metrics.ram_percent.toFixed(1);
+        point.value = metrics.memory_percent.toFixed(1);
         break;
     }
 
