@@ -36,7 +36,7 @@ async def get_current_metrics(
     Get the most recent metrics snapshot.
 
     Returns:
-        Latest metrics including system stats, GPU usage, stage progress, etc.
+        Latest metrics including system stats, stage progress, etc.
     """
     metrics = monitoring_service.get_latest_metrics(job_id)
 
