@@ -69,6 +69,44 @@ class Settings(BaseSettings):
     log_format: Literal["json", "text"] = Field(default="json", description="Log format")
     log_file: str = Field(default="logs/ocr-service.log", description="Log file path")
 
+    # Supabase Configuration
+    supabase_url: str = Field(
+        default="http://localhost:54321",
+        description="Supabase API URL"
+    )
+    supabase_anon_key: str = Field(
+        default="",
+        description="Supabase anonymous key (client-side)"
+    )
+    supabase_service_role_key: str = Field(
+        default="",
+        description="Supabase service role key (backend - bypasses RLS)"
+    )
+    database_url: str = Field(
+        default="postgresql://postgres:postgres@localhost:54322/postgres",
+        description="Direct PostgreSQL connection URL"
+    )
+
+    # Supabase Storage Buckets
+    supabase_storage_bucket_uploads: str = Field(
+        default="ocr-uploads",
+        description="Storage bucket for uploaded files"
+    )
+    supabase_storage_bucket_results: str = Field(
+        default="ocr-results",
+        description="Storage bucket for OCR results"
+    )
+
+    # Development Test User
+    dev_user_id: str = Field(
+        default="a0000000-0000-0000-0000-000000000001",
+        description="Development test user ID"
+    )
+    dev_api_key: str = Field(
+        default="dev_test_key_12345",
+        description="Development test API key"
+    )
+
     # API Storage Configuration
     api_temp_directory: str = Field(
         default="data/temp",

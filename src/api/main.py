@@ -14,6 +14,7 @@ from .services import FileManager, PromptManager, JobManager, BatchManager, Prog
 from .services.result_emitter import get_result_emitter
 # GPU resource tracking removed - using container mode only
 from ..utils.system_monitor import SystemMonitor
+from ..database import initialize_supabase
 from .middleware import (
     http_exception_handler,
     validation_exception_handler,
@@ -46,6 +47,18 @@ async def lifespan(app: FastAPI):
     global file_manager, prompt_manager, job_manager, batch_manager, progress_emitter, model_manager, system_monitor
     settings = get_settings()
 
+    # Initialize Supabase connection
+    logger.info("Initializing Supabase connection...")
+    try:
+        supabase_client = initialize_supabase(
+            url=settings.supabase_url,
+            service_key=settings.supabase_service_role_key
+        )
+        logger.info("✅ Supabase initialized successfully")
+    except Exception as e:
+        logger.warning(f"⚠️  Supabase initialization failed (continuing without database): {e}")
+        # Continue without database - Phase 1 is optional for existing functionality
+
     logger.info("Starting in CONTAINER MODE - GPU management handled by containers")
 
     # Initialize services
@@ -72,7 +85,8 @@ async def lifespan(app: FastAPI):
         processing_directory=settings.api_processing_directory,
         output_directory=settings.api_output_directory,
         max_concurrent_jobs=2,  # Limit concurrent jobs
-        result_emitter=result_emitter
+        result_emitter=result_emitter,
+        event_loop=loop
     )
 
     # Initialize batch manager

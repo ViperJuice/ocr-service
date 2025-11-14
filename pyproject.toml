@@ -34,6 +34,10 @@ dependencies = [
     "pyyaml>=6.0.0",
     "aiofiles>=23.0.0",             # Async file operations
     "psutil>=5.9.0",                # System monitoring
+
+    # Database
+    "supabase>=2.0.0",              # Supabase Python client
+    "postgrest>=0.10.0",            # PostgREST client (dependency of supabase)
 ]
 
 [project.optional-dependencies]
