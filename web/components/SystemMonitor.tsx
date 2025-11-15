@@ -40,12 +40,12 @@ export function SystemMonitor({
       history: history,
       alerts: alerts,
       summary: {
-        total_gpus: current.gpus.length,
+        total_gpus: current.gpus?.length ?? 0,
         avg_cpu: (
-          history.reduce((sum, m) => sum + m.cpu_percent, 0) / history.length
+          history.reduce((sum, m) => sum + (m.cpu_percent ?? 0), 0) / history.length
         ).toFixed(1),
         avg_ram: (
-          history.reduce((sum, m) => sum + m.ram_percent, 0) / history.length
+          history.reduce((sum, m) => sum + (m.ram_percent ?? 0), 0) / history.length
         ).toFixed(1),
       },
     };
@@ -90,21 +90,22 @@ export function SystemMonitor({
       {/* GPU Cards */}
       <div className="space-y-3">
         <h3 className="text-sm font-semibold text-gray-300">GPU Metrics</h3>
-        {current.gpus.map((gpu) => (
-          <div
-            key={gpu.id}
-            className="bg-gray-800 rounded-lg p-4 border border-gray-700"
-          >
-            <div className="flex items-center justify-between mb-3">
-              <div>
-                <h4 className="font-medium text-sm">GPU {gpu.id}</h4>
-                <p className="text-xs text-gray-400">{gpu.name}</p>
+        {current.gpus && current.gpus.length > 0 ? (
+          current.gpus.map((gpu) => (
+            <div
+              key={gpu.id}
+              className="bg-gray-800 rounded-lg p-4 border border-gray-700"
+            >
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <h4 className="font-medium text-sm">GPU {gpu.id}</h4>
+                  <p className="text-xs text-gray-400">{gpu.name ?? "Unknown GPU"}</p>
+                </div>
+                <div className="flex items-center gap-1 text-sm">
+                  <Thermometer className="w-4 h-4 text-orange-400" />
+                  <span>{gpu.temperature_c ?? "--"}°C</span>
+                </div>
               </div>
-              <div className="flex items-center gap-1 text-sm">
-                <Thermometer className="w-4 h-4 text-orange-400" />
-                <span>{gpu.temperature_c}°C</span>
-              </div>
-            </div>
 
             {/* Memory bar */}
             <div className="space-y-1 mb-2">
@@ -150,7 +151,12 @@ export function SystemMonitor({
               </div>
             </div>
           </div>
-        ))}
+          ))
+        ) : (
+          <div className="bg-gray-800 rounded-lg p-4 border border-gray-700 text-center text-gray-400 text-sm">
+            No GPU data available
+          </div>
+        )}
       </div>
 
       {/* CPU & RAM */}
@@ -235,11 +241,11 @@ export function SystemMonitor({
           <div className="grid grid-cols-2 gap-2 mt-2 text-xs">
             <div>
               <div className="text-gray-400">Load Time</div>
-              <div>{current.active_model.load_time_seconds.toFixed(1)}s</div>
+              <div>{current.active_model.load_time_seconds?.toFixed(1) ?? "--"}s</div>
             </div>
             <div>
               <div className="text-gray-400">Memory</div>
-              <div>{current.active_model.memory_footprint_gb.toFixed(2)} GB</div>
+              <div>{current.active_model.memory_footprint_gb?.toFixed(2) ?? "--"} GB</div>
             </div>
           </div>
         </div>
@@ -264,7 +270,7 @@ export function SystemMonitor({
               <option value="cpu">CPU</option>
               <option value="ram">RAM</option>
             </select>
-            {selectedMetric.startsWith("gpu") && current.gpus.length > 1 && (
+            {selectedMetric.startsWith("gpu") && current.gpus && current.gpus.length > 1 && (
               <select
                 value={selectedGpu}
                 onChange={(e) => setSelectedGpu(Number(e.target.value))}
