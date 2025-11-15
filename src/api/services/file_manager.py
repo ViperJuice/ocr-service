@@ -70,13 +70,23 @@ class Directory:
 class FileManager:
     """Manage file uploads and temporary storage."""
 
-    def __init__(self, temp_directory: str, expiry_hours: int = 6):
+    def __init__(
+        self,
+        temp_directory: str,
+        expiry_hours: int = 6,
+        file_repository=None,
+        supabase_client=None,
+        dev_user_id: str = "a0000000-0000-0000-0000-000000000001"
+    ):
         """
         Initialize file manager.
 
         Args:
             temp_directory: Directory for temporary file storage
             expiry_hours: Hours until files expire
+            file_repository: Optional FileRepository for database writes (Phase 2)
+            supabase_client: Optional SupabaseClient for storage uploads (Phase 2)
+            dev_user_id: Development user ID for file ownership (Phase 2)
         """
         self.temp_directory = Path(temp_directory)
         self.expiry_hours = expiry_hours
@@ -84,6 +94,11 @@ class FileManager:
 
         # In-memory directory registry
         self.directories: dict = {}
+
+        # Database integration (Phase 2)
+        self.file_repository = file_repository
+        self.supabase_client = supabase_client
+        self.dev_user_id = dev_user_id
 
         logger.info(f"FileManager initialized: {self.temp_directory}")
 
@@ -173,6 +188,48 @@ class FileManager:
             json.dump(metadata.to_dict(), f, indent=2)
 
         logger.info(f"File uploaded: {file_id} ({file.filename}, {size_bytes} bytes)")
+
+        # Upload to Supabase Storage and database (Phase 2: dual-write)
+        if self.file_repository and self.supabase_client:
+            try:
+                from uuid import UUID
+
+                # Upload file to Supabase Storage
+                supabase_storage_path = f"{self.dev_user_id}/{file_id}/{file.filename}"
+
+                # Read from local storage path
+                with open(storage_path, 'rb') as f:
+                    file_bytes = f.read()
+
+                storage_result = self.supabase_client.client.storage \
+                    .from_("ocr-uploads") \
+                    .upload(
+                        path=supabase_storage_path,
+                        file=file_bytes,
+                        file_options={"content-type": mime_type}
+                    )
+
+                logger.info(f"File {file_id} uploaded to Supabase Storage: {supabase_storage_path}")
+
+                # Store metadata in database (using await since we're in async context)
+                # Pass file_id to ensure database uses same ID as in-memory storage
+                db_file = await self.file_repository.create_file(
+                    user_id=UUID(self.dev_user_id),
+                    filename=file.filename,
+                    content_type=mime_type,
+                    size_bytes=size_bytes,
+                    storage_bucket="ocr-uploads",
+                    storage_path=supabase_storage_path,
+                    file_id=UUID(file_id),
+                    page_count=page_count,
+                    expires_hours=self.expiry_hours
+                )
+                logger.info(f"File {file_id} metadata stored in database")
+
+            except Exception as e:
+                logger.error(f"Failed to upload file {file_id} to Supabase: {e}")
+                # Don't fail request - fallback to local storage
+
         return metadata
 
     def get_file_info(self, file_id: str) -> FileMetadata:

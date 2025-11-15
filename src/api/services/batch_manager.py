@@ -36,7 +36,9 @@ class BatchManager:
         self,
         processing_directory: str,
         output_directory: str,
-        max_concurrent_batches: int = 1
+        max_concurrent_batches: int = 1,
+        batch_repository=None,
+        event_loop=None
     ):
         """
         Initialize batch manager.
@@ -45,6 +47,8 @@ class BatchManager:
             processing_directory: Directory for active processing
             output_directory: Directory for completed results
             max_concurrent_batches: Maximum concurrent batch jobs
+            batch_repository: Optional BatchRepository for database writes (Phase 2)
+            event_loop: Optional event loop for thread-safe async operations (Phase 2)
         """
         self.processing_directory = Path(processing_directory)
         self.output_directory = Path(output_directory)
@@ -59,6 +63,10 @@ class BatchManager:
 
         # Processing threads
         self.processing_threads: Dict[str, threading.Thread] = {}
+
+        # Database integration (Phase 2)
+        self.batch_repository = batch_repository
+        self._event_loop = event_loop
 
         logger.info(f"BatchManager initialized: processing={processing_directory}, output={output_directory}")
 
@@ -109,6 +117,36 @@ class BatchManager:
             self.batches[batch_job_id] = batch
 
         logger.info(f"Batch job created: {batch_job_id} with {len(file_ids)} documents")
+
+        # Write to database (Phase 2: dual-write)
+        if self.batch_repository and self._event_loop:
+            try:
+                from uuid import UUID
+                import asyncio
+
+                # Use dev user for now (Phase 3+ will use real user)
+                dev_user_id = "a0000000-0000-0000-0000-000000000001"
+
+                future = asyncio.run_coroutine_threadsafe(
+                    self.batch_repository.create_batch_job(
+                        user_id=UUID(dev_user_id),
+                        name=None,  # Could add name parameter to create_batch_job
+                        total_documents=len(file_ids),
+                        model=model,
+                        prompt_type=prompt_type,
+                        custom_prompts=custom_prompts,
+                        processing_options=processing_options,
+                        output_format=output_format
+                    ),
+                    self._event_loop
+                )
+
+                db_batch = future.result(timeout=5)
+                logger.info(f"Batch {batch_job_id} written to database")
+
+            except Exception as e:
+                logger.error(f"Failed to write batch {batch_job_id} to database: {e}")
+
         return batch
 
     def start_batch_job(
@@ -227,6 +265,25 @@ class BatchManager:
                     with self.batch_lock:
                         batch.overall_progress_pct = batch_progress_pct
 
+                    # Update database progress (Phase 2: dual-write)
+                    if self.batch_repository and self._event_loop:
+                        try:
+                            from uuid import UUID
+                            import asyncio
+
+                            future = asyncio.run_coroutine_threadsafe(
+                                self.batch_repository.update_batch_progress(
+                                    batch_job_id=UUID(batch.batch_job_id),
+                                    documents_completed=idx,
+                                    overall_progress_pct=batch_progress_pct
+                                ),
+                                self._event_loop
+                            )
+                            future.result(timeout=5)
+
+                        except Exception as e:
+                            logger.error(f"Failed to update batch {batch.batch_job_id} progress: {e}")
+
                     current_doc_progress = {
                         "job_id": job.job_id,
                         "filename": file_info.filename,
@@ -282,6 +339,25 @@ class BatchManager:
                 batch.completed_at = datetime.utcnow()
                 batch.overall_progress_pct = 100.0
 
+            # Update database (Phase 2: dual-write)
+            if self.batch_repository and self._event_loop:
+                try:
+                    from uuid import UUID
+                    import asyncio
+
+                    future = asyncio.run_coroutine_threadsafe(
+                        self.batch_repository.update_batch_status(
+                            batch_job_id=UUID(batch.batch_job_id),
+                            status="completed",
+                            completed_at=batch.completed_at
+                        ),
+                        self._event_loop
+                    )
+                    future.result(timeout=5)
+
+                except Exception as e:
+                    logger.error(f"Failed to update batch {batch.batch_job_id} completion: {e}")
+
             # Emit completion event
             processing_time = 0.0
             if batch.started_at and batch.completed_at:
@@ -312,6 +388,26 @@ class BatchManager:
                 batch.status = BatchJobStatus.FAILED
                 batch.completed_at = datetime.utcnow()
                 batch.error = str(e)
+
+            # Update database (Phase 2: dual-write)
+            if self.batch_repository and self._event_loop:
+                try:
+                    from uuid import UUID
+                    import asyncio
+
+                    future = asyncio.run_coroutine_threadsafe(
+                        self.batch_repository.update_batch_status(
+                            batch_job_id=UUID(batch.batch_job_id),
+                            status="failed",
+                            error_message=str(e),
+                            completed_at=batch.completed_at
+                        ),
+                        self._event_loop
+                    )
+                    future.result(timeout=5)
+
+                except Exception as db_error:
+                    logger.error(f"Failed to update batch {batch.batch_job_id} failure: {db_error}")
 
             # Emit error
             _run_async_in_thread(

@@ -14,7 +14,8 @@ from .services import FileManager, PromptManager, JobManager, BatchManager, Prog
 from .services.result_emitter import get_result_emitter
 # GPU resource tracking removed - using container mode only
 from ..utils.system_monitor import SystemMonitor
-from ..database import initialize_supabase
+from ..database import initialize_supabase, get_supabase_client
+from ..database.repositories import JobRepository, FileRepository, BatchRepository
 from .middleware import (
     http_exception_handler,
     validation_exception_handler,
@@ -49,22 +50,39 @@ async def lifespan(app: FastAPI):
 
     # Initialize Supabase connection
     logger.info("Initializing Supabase connection...")
+    supabase_client = None
+    job_repository = None
+    file_repository = None
+    batch_repository = None
+
     try:
         supabase_client = initialize_supabase(
             url=settings.supabase_url,
             service_key=settings.supabase_service_role_key
         )
         logger.info("✅ Supabase initialized successfully")
+
+        # Initialize repositories
+        logger.info("Initializing database repositories...")
+        client = supabase_client.client
+        job_repository = JobRepository(client)
+        file_repository = FileRepository(client)
+        batch_repository = BatchRepository(client)
+        logger.info("✓ Repositories initialized successfully")
+
     except Exception as e:
         logger.warning(f"⚠️  Supabase initialization failed (continuing without database): {e}")
-        # Continue without database - Phase 1 is optional for existing functionality
+        # Continue without database - Phase 2 dual-write is optional
 
     logger.info("Starting in CONTAINER MODE - GPU management handled by containers")
 
     # Initialize services
     file_manager = FileManager(
         temp_directory=settings.api_temp_directory,
-        expiry_hours=settings.temp_file_expiry_hours
+        expiry_hours=settings.temp_file_expiry_hours,
+        file_repository=file_repository,
+        supabase_client=supabase_client,
+        dev_user_id=settings.dev_user_id
     )
 
     prompt_manager = PromptManager(
@@ -86,14 +104,17 @@ async def lifespan(app: FastAPI):
         output_directory=settings.api_output_directory,
         max_concurrent_jobs=2,  # Limit concurrent jobs
         result_emitter=result_emitter,
-        event_loop=loop
+        event_loop=loop,
+        job_repository=job_repository
     )
 
     # Initialize batch manager
     batch_manager = BatchManager(
         processing_directory=settings.api_processing_directory,
         output_directory=settings.api_output_directory,
-        max_concurrent_batches=1  # Process one batch at a time
+        max_concurrent_batches=1,  # Process one batch at a time
+        batch_repository=batch_repository,
+        event_loop=loop
     )
 
     # Initialize model manager (container mode only)

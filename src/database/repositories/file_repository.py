@@ -28,6 +28,7 @@ class FileRepository(BaseRepository):
         size_bytes: int,
         storage_bucket: str,
         storage_path: str,
+        file_id: Optional[UUID] = None,
         page_count: Optional[int] = None,
         expires_hours: int = 6,
         metadata: Optional[Dict[str, Any]] = None,
@@ -41,6 +42,7 @@ class FileRepository(BaseRepository):
             size_bytes: File size in bytes
             storage_bucket: Supabase storage bucket name
             storage_path: Path within storage bucket
+            file_id: Optional file_id (if not provided, database generates one)
             page_count: Number of pages (for PDFs)
             expires_hours: Hours until file expires
             metadata: Optional metadata dict
@@ -61,6 +63,11 @@ class FileRepository(BaseRepository):
             "expires_at": expires_at.isoformat(),
             "metadata": metadata or {},
         }
+
+        # Include file_id if provided (for dual-write pattern)
+        if file_id:
+            data["file_id"] = str(file_id)
+
         return await self.create(data)
 
     async def get_file(self, file_id: UUID) -> Optional[Dict[str, Any]]:

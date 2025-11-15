@@ -3,6 +3,7 @@ import uuid
 import threading
 import logging
 import time
+import asyncio
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any
@@ -54,7 +55,9 @@ class JobManager:
         processing_directory: str,
         output_directory: str,
         max_concurrent_jobs: int = 2,
-        result_emitter=None
+        result_emitter=None,
+        event_loop=None,
+        job_repository=None
     ):
         """
         Initialize job manager.
@@ -64,11 +67,15 @@ class JobManager:
             output_directory: Directory for completed results
             max_concurrent_jobs: Maximum concurrent processing jobs
             result_emitter: Optional ResultEmitter for streaming results
+            event_loop: Optional event loop for thread-safe async operations
+            job_repository: Optional JobRepository for database writes (Phase 2)
         """
         self.processing_directory = Path(processing_directory)
         self.output_directory = Path(output_directory)
         self.max_concurrent_jobs = max_concurrent_jobs
         self.result_emitter = result_emitter
+        self._event_loop = event_loop
+        self.job_repository = job_repository
 
         self.processing_directory.mkdir(parents=True, exist_ok=True)
         self.output_directory.mkdir(parents=True, exist_ok=True)
@@ -89,14 +96,9 @@ class JobManager:
         # Semaphore for enforcing max concurrent jobs
         self.job_semaphore = threading.Semaphore(max_concurrent_jobs)
 
-        tier_msg = ""
-        if system_capability:
-            tier_msg = f", system_tier={system_capability['max_tier']}"
-
         logger.info(
             f"JobManager initialized: processing={processing_directory}, "
-            f"output={output_directory}, max_concurrent={max_concurrent_jobs}, "
-            f"gpu_tracking={'enabled' if gpu_tracker else 'disabled'}{tier_msg}"
+            f"output={output_directory}, max_concurrent={max_concurrent_jobs}"
         )
 
     def create_job(
@@ -145,6 +147,52 @@ class JobManager:
             self.jobs[job_id] = job
 
         logger.info(f"Job created: {job_id} for file {file_id}")
+
+        # Write to database (Phase 2: dual-write)
+        if self.job_repository and self._event_loop:
+            try:
+                from uuid import UUID
+
+                # Get user_id from processing_options or use dev default
+                user_id_str = processing_options.get('user_id', 'a0000000-0000-0000-0000-000000000001')
+
+                future = asyncio.run_coroutine_threadsafe(
+                    self.job_repository.create_job(
+                        user_id=UUID(user_id_str),
+                        file_id=UUID(file_id),
+                        filename=filename,
+                        model=model,
+                        prompt_type=prompt_type,
+                        custom_prompts=custom_prompts,
+                        processing_options=processing_options,
+                        output_format=output_format,
+                        parent_batch_id=UUID(job.parent_batch_id) if job.parent_batch_id else None
+                    ),
+                    self._event_loop
+                )
+
+                db_job = future.result(timeout=5)
+                logger.info(f"Job {job_id} written to database")
+
+                # Log creation event
+                future_event = asyncio.run_coroutine_threadsafe(
+                    self.job_repository.create_job_event(
+                        job_id=UUID(job_id),
+                        event_type="job_created",
+                        event_data={
+                            "filename": filename,
+                            "model": model,
+                            "estimated_pages": estimated_pages
+                        }
+                    ),
+                    self._event_loop
+                )
+                future_event.result(timeout=5)
+
+            except Exception as e:
+                logger.error(f"Failed to write job {job_id} to database: {e}", exc_info=True)
+                # Don't fail request - fallback to in-memory
+
         return job
 
     def get_job(self, job_id: str) -> Job:
@@ -187,6 +235,35 @@ class JobManager:
         with self.job_lock:
             job.status = JobStatus.PROCESSING
             job.started_at = datetime.utcnow()
+
+        # Update database (Phase 2: dual-write)
+        if self.job_repository and self._event_loop:
+            try:
+                from uuid import UUID
+
+                future = asyncio.run_coroutine_threadsafe(
+                    self.job_repository.update_job_status(
+                        job_id=UUID(job_id),
+                        status="processing",
+                        started_at=job.started_at
+                    ),
+                    self._event_loop
+                )
+                future.result(timeout=5)
+
+                # Log start event
+                future_event = asyncio.run_coroutine_threadsafe(
+                    self.job_repository.create_job_event(
+                        job_id=UUID(job_id),
+                        event_type="job_started",
+                        event_data={"started_at": job.started_at.isoformat()}
+                    ),
+                    self._event_loop
+                )
+                future_event.result(timeout=5)
+
+            except Exception as e:
+                logger.error(f"Failed to update job {job_id} status in database: {e}")
 
         # Create processing thread
         thread = threading.Thread(
@@ -258,7 +335,8 @@ class JobManager:
                 prefer_quality=job.processing_options.get('prefer_quality', True),
                 progress_callback=progress_callback,
                 result_emitter=self.result_emitter,
-                job_id=job.job_id
+                job_id=job.job_id,
+                event_loop=self._event_loop
             )
 
             # Extract page range from processing options
@@ -302,6 +380,49 @@ class JobManager:
                 job.pages_completed = result.get('total_pages', 0)
                 job.progress_pct = 100.0
 
+            # Update database (Phase 2: dual-write)
+            if self.job_repository and self._event_loop:
+                try:
+                    from uuid import UUID
+
+                    future = asyncio.run_coroutine_threadsafe(
+                        self.job_repository.update_job_status(
+                            job_id=UUID(job.job_id),
+                            status="completed",
+                            completed_at=job.completed_at
+                        ),
+                        self._event_loop
+                    )
+                    future.result(timeout=5)
+
+                    # Update result path
+                    future_result = asyncio.run_coroutine_threadsafe(
+                        self.job_repository.update_job_result(
+                            job_id=UUID(job.job_id),
+                            result_path=str(output_path)
+                        ),
+                        self._event_loop
+                    )
+                    future_result.result(timeout=5)
+
+                    # Log completion event
+                    processing_time = (job.completed_at - job.started_at).total_seconds() if job.started_at else 0
+                    future_event = asyncio.run_coroutine_threadsafe(
+                        self.job_repository.create_job_event(
+                            job_id=UUID(job.job_id),
+                            event_type="job_completed",
+                            event_data={
+                                "total_pages": job.total_pages,
+                                "processing_time": processing_time
+                            }
+                        ),
+                        self._event_loop
+                    )
+                    future_event.result(timeout=5)
+
+                except Exception as e:
+                    logger.error(f"Failed to update job {job.job_id} completion in database: {e}")
+
             logger.info(f"Job completed successfully: {job.job_id}")
 
         except Exception as e:
@@ -313,12 +434,49 @@ class JobManager:
                 job.completed_at = datetime.utcnow()
                 job.error = str(e)
 
-        finally:
-            # Unload models explicitly to free GPU memory
-            if model_manager:
+            # Update database (Phase 2: dual-write)
+            if self.job_repository and self._event_loop:
                 try:
-                    model_manager.unload_all()
-                    logger.info(f"Job {job.job_id} unloaded all models")
+                    from uuid import UUID
+
+                    future = asyncio.run_coroutine_threadsafe(
+                        self.job_repository.update_job_status(
+                            job_id=UUID(job.job_id),
+                            status="failed",
+                            error_message=str(e),
+                            completed_at=job.completed_at
+                        ),
+                        self._event_loop
+                    )
+                    future.result(timeout=5)
+
+                    # Log failure event
+                    future_event = asyncio.run_coroutine_threadsafe(
+                        self.job_repository.create_job_event(
+                            job_id=UUID(job.job_id),
+                            event_type="job_failed",
+                            event_data={
+                                "error": str(e),
+                                "error_type": type(e).__name__
+                            }
+                        ),
+                        self._event_loop
+                    )
+                    future_event.result(timeout=5)
+
+                except Exception as db_error:
+                    logger.error(f"Failed to update job {job.job_id} failure in database: {db_error}")
+
+        finally:
+            # Unload models explicitly to free GPU memory (emergency fallback)
+            if model_manager and self._event_loop:
+                try:
+                    future = asyncio.run_coroutine_threadsafe(
+                        model_manager.unload_all(),
+                        self._event_loop
+                    )
+                    unload_results = future.result(timeout=30)
+                    logger.info(f"Job {job.job_id} cleanup: unloaded models - {unload_results}")
                 except Exception as e:
                     logger.warning(f"Failed to unload models for job {job.job_id}: {e}")
 
@@ -374,6 +532,35 @@ class JobManager:
             if job.status != JobStatus.CANCELLED:
                 job.status = JobStatus.CANCELLED
                 job.completed_at = datetime.utcnow()
+
+        # Update database (Phase 2: dual-write)
+        if self.job_repository and self._event_loop:
+            try:
+                from uuid import UUID
+
+                future = asyncio.run_coroutine_threadsafe(
+                    self.job_repository.update_job_status(
+                        job_id=UUID(job_id),
+                        status="cancelled",
+                        completed_at=job.completed_at
+                    ),
+                    self._event_loop
+                )
+                future.result(timeout=5)
+
+                # Log cancellation event
+                future_event = asyncio.run_coroutine_threadsafe(
+                    self.job_repository.create_job_event(
+                        job_id=UUID(job_id),
+                        event_type="job_cancelled",
+                        event_data={"cancelled_at": job.completed_at.isoformat()}
+                    ),
+                    self._event_loop
+                )
+                future_event.result(timeout=5)
+
+            except Exception as e:
+                logger.error(f"Failed to update job {job_id} cancellation in database: {e}")
 
         logger.info(f"Job cancelled: {job_id}")
         return True
@@ -467,12 +654,39 @@ class JobManager:
             pages_completed: Number of pages completed
             stage: Current stage name
         """
+        # Update in-memory (existing)
         with self.job_lock:
             if job_id in self.jobs:
                 job = self.jobs[job_id]
                 job.progress_pct = progress_pct
                 job.pages_completed = pages_completed
                 job.current_stage = stage
+
+        # Update database (Phase 2: dual-write)
+        if self.job_repository and self._event_loop:
+            try:
+                from uuid import UUID
+
+                # Get total pages from in-memory job
+                total_pages = None
+                with self.job_lock:
+                    if job_id in self.jobs:
+                        total_pages = self.jobs[job_id].total_pages
+
+                future = asyncio.run_coroutine_threadsafe(
+                    self.job_repository.update_job_progress(
+                        job_id=UUID(job_id),
+                        progress_pct=progress_pct,
+                        pages_completed=pages_completed,
+                        current_stage=stage,
+                        total_pages=total_pages
+                    ),
+                    self._event_loop
+                )
+                future.result(timeout=5)
+
+            except Exception as e:
+                logger.error(f"Failed to update job {job_id} progress in database: {e}")
 
     def set_progress_callback(self, job_id: str, callback) -> None:
         """
