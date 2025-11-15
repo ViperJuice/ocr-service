@@ -5,10 +5,12 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "prebuild": "npm run baml:generate",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "baml:generate": "npx @boundaryml/baml generate"
+    "baml:generate": "npx @boundaryml/baml generate",
+    "postinstall": "npm run baml:generate || true"
   },
   "author": "",
   "license": "ISC",
