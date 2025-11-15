@@ -103,7 +103,14 @@ class ResultEmitter:
         except Exception as e:
             logger.error(f"Failed to emit OCR page {page_num} for job {job_id}: {e}")
 
-    def emit_merge_page(self, job_id: str, page_num: int, text: str) -> None:
+    def emit_merge_page(
+        self,
+        job_id: str,
+        page_num: int,
+        text: str,
+        processing_time: Optional[float] = None,
+        total_pages: Optional[int] = None
+    ) -> None:
         """
         Emit merge page completion event (called from worker thread).
 
@@ -111,14 +118,24 @@ class ResultEmitter:
             job_id: Job identifier
             page_num: Page number (1-indexed)
             text: Merged text for this page
+            processing_time: Optional processing time in seconds
+            total_pages: Optional total pages in job
         """
+        event_data = {
+            "page_num": page_num,
+            "text": text,
+            "timestamp": datetime.utcnow().isoformat() + 'Z'
+        }
+
+        # Add optional metadata
+        if processing_time is not None:
+            event_data["processing_time"] = processing_time
+        if total_pages is not None:
+            event_data["total_pages"] = total_pages
+
         event = {
             "event": "merge_page_complete",
-            "data": {
-                "page_num": page_num,
-                "text": text,
-                "timestamp": datetime.utcnow().isoformat() + 'Z'
-            }
+            "data": event_data
         }
 
         # Schedule broadcast in the main event loop from worker thread

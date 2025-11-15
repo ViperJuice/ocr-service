@@ -14,22 +14,28 @@ from ..utils.system_monitor import SystemMonitor
 logger = logging.getLogger(__name__)
 
 
-def run_async_in_thread(coro):
+def run_async_in_thread(coro, event_loop=None):
     """
     Run async coroutine in a thread-safe manner.
 
-    This creates a new event loop in the current thread if one doesn't exist,
-    or runs the coroutine in the existing loop if available.
+    Args:
+        coro: The coroutine to run
+        event_loop: Optional event loop to use (recommended for thread-safety)
+
+    Returns:
+        Result of the coroutine
+
+    Note:
+        If event_loop is provided, uses asyncio.run_coroutine_threadsafe for proper
+        thread-safe execution. Otherwise falls back to creating a new loop (not recommended).
     """
-    try:
-        # Try to get existing event loop
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # If loop is running (shouldn't happen in thread), create new loop
-            raise RuntimeError("Loop is running")
-        return loop.run_until_complete(coro)
-    except RuntimeError:
-        # No event loop or loop is running - create a new one
+    if event_loop is not None:
+        # Thread-safe execution using the main event loop
+        future = asyncio.run_coroutine_threadsafe(coro, event_loop)
+        return future.result()  # Block until complete
+    else:
+        # Fallback: Create new loop (may cause issues with httpx clients)
+        logger.warning("run_async_in_thread called without event_loop - creating new loop")
         new_loop = asyncio.new_event_loop()
         asyncio.set_event_loop(new_loop)
         try:
@@ -74,6 +80,7 @@ class StagedPipelineProcessor:
         self,
         model_manager,
         pdf_handler: PDFHandler,
+        baml_ocr_service: Optional[Any] = None,
         verbose: bool = False,
         enable_memory_profiling: bool = False,
         enable_system_monitoring: bool = True,
@@ -81,7 +88,8 @@ class StagedPipelineProcessor:
         prefer_quality: bool = True,
         progress_callback: Optional[Any] = None,
         result_emitter: Optional[Any] = None,
-        job_id: Optional[str] = None
+        job_id: Optional[str] = None,
+        event_loop=None
     ):
         """
         Initialize staged pipeline processor.
@@ -89,6 +97,7 @@ class StagedPipelineProcessor:
         Args:
             model_manager: ModelManager instance
             pdf_handler: PDFHandler instance
+            baml_ocr_service: Optional BAMLOCRService for type-safe operations
             verbose: Print progress messages
             enable_memory_profiling: Enable memory profiling
             enable_system_monitoring: Enable system resource monitoring
@@ -97,9 +106,11 @@ class StagedPipelineProcessor:
             progress_callback: Optional callback function(progress_pct, pages_completed, stage)
             result_emitter: Optional ResultEmitter for streaming results
             job_id: Optional job identifier for result emission
+            event_loop: Optional event loop for thread-safe async operations
         """
         self.model_manager = model_manager
         self.pdf_handler = pdf_handler
+        self.baml_ocr_service = baml_ocr_service
         self.verbose = verbose
         self.enable_memory_profiling = enable_memory_profiling
         self.enable_system_monitoring = enable_system_monitoring
@@ -108,6 +119,7 @@ class StagedPipelineProcessor:
         self.progress_callback = progress_callback
         self.result_emitter = result_emitter
         self.job_id = job_id
+        self._event_loop = event_loop
 
         # Will be initialized in process_pdf()
         self.checkpoint_manager = None
@@ -339,7 +351,15 @@ class StagedPipelineProcessor:
         # Container mode: Initialize HTTP client
         if self.model_manager.http_client_manager is None:
             logger.info("Initializing container mode for OCR stage...")
-            asyncio.run(self.model_manager.initialize_container_mode())
+            if self._event_loop is not None:
+                future = asyncio.run_coroutine_threadsafe(
+                    self.model_manager.initialize_container_mode(),
+                    self._event_loop
+                )
+                future.result()  # Block until complete
+            else:
+                logger.warning("No event loop provided - using asyncio.run (may cause issues)")
+                asyncio.run(self.model_manager.initialize_container_mode())
 
         if self.system_monitor:
             self.system_monitor.set_model_info(
@@ -388,12 +408,26 @@ class StagedPipelineProcessor:
             # Run OCR with container
             page_start = time.time()
 
-            # Use container inference
-            ocr_model_result = run_async_in_thread(self.model_manager.infer_with_container(
-                model_name=stage_config["model_name"],
-                image=image,
-                prompt_type="ocr"
-            ))
+            # Use BAML service if available (type-safe operations)
+            if self.baml_ocr_service:
+                ocr_model_result = run_async_in_thread(
+                    self.baml_ocr_service.extract_text_ocr(
+                        image=image,
+                        custom_prompt=self.custom_prompts.get("ocr") if self.custom_prompts else None
+                    ),
+                    event_loop=self._event_loop
+                )
+            else:
+                # Fallback to direct container call
+                logger.warning("BAML service not available, using direct container call")
+                ocr_model_result = run_async_in_thread(
+                    self.model_manager.infer_with_container(
+                        model_name=stage_config["model_name"],
+                        image=image,
+                        prompt_type="ocr"
+                    ),
+                    event_loop=self._event_loop
+                )
 
             ocr_text = ocr_model_result.text or ""
             page_time = time.time() - page_start
@@ -568,16 +602,30 @@ Provide the most accurate merged version by combining both sources, fixing any O
                     ocr_text=ocr_result.ocr_text
                 )
 
-            merge_model_result = run_async_in_thread(self.model_manager.infer_with_container(
-                model_name=stage_config["model_name"],
-                image=image,
-                prompt=merge_prompt if "deepseek" in stage_config["model_name"].lower() else None,
-                messages=[{
-                    "role": "user",
-                    "content": [{"type": "text", "text": merge_prompt}]
-                }] if "qwen" in stage_config["model_name"].lower() else None,
-                prompt_type="merge"
-            ))
+            # Call merge model
+            # Use BAML service if available (type-safe operations with intelligent merging)
+            if self.baml_ocr_service:
+                merge_model_result = run_async_in_thread(
+                    self.baml_ocr_service.merge_texts(
+                        image=image,
+                        embedded_text=embedded_text or "",
+                        ocr_text=ocr_result.ocr_text,
+                        custom_prompt=self.custom_prompts.get("merge") if self.custom_prompts else None
+                    ),
+                    event_loop=self._event_loop
+                )
+            else:
+                # Fallback to direct container call
+                logger.warning("BAML service not available for merge, using direct container call")
+                merge_model_result = run_async_in_thread(
+                    self.model_manager.infer_with_container(
+                        model_name=stage_config["model_name"],
+                        image=image,
+                        prompt=merge_prompt,
+                        prompt_type="merge"
+                    ),
+                    event_loop=self._event_loop
+                )
 
             merged_text = merge_model_result.text or ""
             page_time = time.time() - page_start
@@ -592,9 +640,15 @@ Provide the most accurate merged version by combining both sources, fixing any O
                 append=(idx > 0 or start_page > 0)
             )
 
-            # Emit merged result to SSE clients
+            # Emit merged result to SSE clients with metadata
             if self.result_emitter and self.job_id:
-                self.result_emitter.emit_merge_page(self.job_id, page_num, merged_text)
+                self.result_emitter.emit_merge_page(
+                    job_id=self.job_id,
+                    page_num=page_num,
+                    text=merged_text,
+                    processing_time=page_time,
+                    total_pages=total_pages
+                )
 
             # Save checkpoint
             stage_metadata = {

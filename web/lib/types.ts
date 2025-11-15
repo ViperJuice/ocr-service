@@ -310,6 +310,8 @@ export interface MergePageCompleteEvent {
     page_num: number;
     text: string;
     timestamp: string;
+    processing_time?: number;  // Processing time in seconds
+    total_pages?: number;      // Total pages in job
   };
 }
 
@@ -347,8 +349,11 @@ export type SSEEvent =
 
 export interface SystemMetrics {
   timestamp: string;
-  cpu_percent: number;
-  memory_percent: number;
+  cpu_percent?: number;
+  memory_percent?: number;
+  ram_percent?: number;
+  ram_used_gb?: number;
+  ram_total_gb?: number;
   gpus?: Array<{
     id: number;
     name?: string;
@@ -358,6 +363,18 @@ export interface SystemMetrics {
     utilization_percent: number;
     temperature_c?: number;
   }>;
-  active_jobs: number;
-  queued_jobs: number;
+  active_jobs?: number;
+  queued_jobs?: number;
+  queue?: {
+    queued?: number;
+    processing?: number;
+    completed?: number;
+    failed?: number;
+    cancelled?: number;
+  };
+  active_model?: {
+    model_id?: string;
+    load_time_seconds?: number;
+    memory_footprint_gb?: number;
+  };
 }
