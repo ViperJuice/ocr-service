@@ -52,10 +52,10 @@ export function MetricsTimeline({
         }
         break;
       case "cpu":
-        point.value = metrics.cpu_percent.toFixed(1);
+        point.value = metrics.cpu_percent?.toFixed(1) ?? "0";
         break;
       case "ram":
-        point.value = metrics.memory_percent.toFixed(1);
+        point.value = metrics.memory_percent?.toFixed(1) ?? "0";
         break;
     }
 

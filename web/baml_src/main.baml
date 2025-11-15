@@ -462,6 +462,6 @@ generator typescript_target {
   output_dir "../"
   default_client_mode "async"
   version "0.213.0"
-  module_format "esm"
+  module_format "cjs"
   on_generate "prettier --write baml_client/**/*.ts || true"
 }

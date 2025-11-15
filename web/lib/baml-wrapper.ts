@@ -5,11 +5,28 @@ import type {
   OrchestrationResult,
   UserIntent,
   OCRJobParameters,
+  ToolCall,
   ToolCallSequence,
   RefactoredPrompts,
   ValidationResult,
   FormatReference,
+  PageRange,
+  ProcessingOptions,
 } from "../baml_client/types";
+
+// Re-export BAML types for use in other modules
+export type {
+  OrchestrationResult,
+  UserIntent,
+  OCRJobParameters,
+  ToolCall,
+  ToolCallSequence,
+  RefactoredPrompts,
+  ValidationResult,
+  FormatReference,
+  PageRange,
+  ProcessingOptions,
+};
 
 export const bamlPrompts = {
   /**

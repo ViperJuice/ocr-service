@@ -53,13 +53,13 @@ function detectAlerts(metrics: SystemMetrics): Alert[] {
   });
 
   // CPU alerts (85% warning, 95% critical)
-  if (metrics.cpu_percent >= 95) {
+  if (metrics.cpu_percent !== undefined && metrics.cpu_percent >= 95) {
     alerts.push({
       id: `cpu-${Date.now()}`,
       type: "error",
       message: `CPU usage critical: ${metrics.cpu_percent.toFixed(1)}%`,
     });
-  } else if (metrics.cpu_percent >= 85) {
+  } else if (metrics.cpu_percent !== undefined && metrics.cpu_percent >= 85) {
     alerts.push({
       id: `cpu-${Date.now()}`,
       type: "warning",
@@ -68,13 +68,13 @@ function detectAlerts(metrics: SystemMetrics): Alert[] {
   }
 
   // RAM alerts (85% warning, 95% critical)
-  if (metrics.memory_percent >= 95) {
+  if (metrics.memory_percent !== undefined && metrics.memory_percent >= 95) {
     alerts.push({
       id: `ram-${Date.now()}`,
       type: "error",
       message: `RAM usage critical: ${metrics.memory_percent.toFixed(1)}%`,
     });
-  } else if (metrics.memory_percent >= 85) {
+  } else if (metrics.memory_percent !== undefined && metrics.memory_percent >= 85) {
     alerts.push({
       id: `ram-${Date.now()}`,
       type: "warning",
