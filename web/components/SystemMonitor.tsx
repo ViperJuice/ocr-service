@@ -40,7 +40,7 @@ export function SystemMonitor({
       history: history,
       alerts: alerts,
       summary: {
-        total_gpus: current.gpus.length,
+        total_gpus: current.gpus?.length ?? 0,
         avg_cpu: (
           history.reduce((sum, m) => sum + m.cpu_percent, 0) / history.length
         ).toFixed(1),
@@ -90,67 +90,73 @@ export function SystemMonitor({
       {/* GPU Cards */}
       <div className="space-y-3">
         <h3 className="text-sm font-semibold text-gray-300">GPU Metrics</h3>
-        {current.gpus.map((gpu) => (
-          <div
-            key={gpu.id}
-            className="bg-gray-800 rounded-lg p-4 border border-gray-700"
-          >
-            <div className="flex items-center justify-between mb-3">
-              <div>
-                <h4 className="font-medium text-sm">GPU {gpu.id}</h4>
-                <p className="text-xs text-gray-400">{gpu.name}</p>
+        {current.gpus && current.gpus.length > 0 ? (
+          current.gpus.map((gpu) => (
+            <div
+              key={gpu.id}
+              className="bg-gray-800 rounded-lg p-4 border border-gray-700"
+            >
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <h4 className="font-medium text-sm">GPU {gpu.id}</h4>
+                  <p className="text-xs text-gray-400">{gpu.name ?? "Unknown GPU"}</p>
+                </div>
+                <div className="flex items-center gap-1 text-sm">
+                  <Thermometer className="w-4 h-4 text-orange-400" />
+                  <span>{gpu.temperature_c ?? "--"}°C</span>
+                </div>
               </div>
-              <div className="flex items-center gap-1 text-sm">
-                <Thermometer className="w-4 h-4 text-orange-400" />
-                <span>{gpu.temperature_c}°C</span>
-              </div>
-            </div>
 
-            {/* Memory bar */}
-            <div className="space-y-1 mb-2">
-              <div className="flex justify-between text-xs">
-                <span className="text-gray-400">Memory</span>
-                <span>
-                  {gpu.memory_used_mb.toFixed(0)} / {gpu.memory_total_mb.toFixed(0)}{" "}
-                  MB
-                </span>
+              {/* Memory bar */}
+              <div className="space-y-1 mb-2">
+                <div className="flex justify-between text-xs">
+                  <span className="text-gray-400">Memory</span>
+                  <span>
+                    {gpu.memory_used_mb.toFixed(0)} / {gpu.memory_total_mb.toFixed(0)}{" "}
+                    MB
+                  </span>
+                </div>
+                <div className="w-full bg-gray-700 rounded-full h-2 overflow-hidden">
+                  <div
+                    className={`h-full transition-all duration-300 ${
+                      (() => {
+                        // Normalize to 0-1 range (handle both 0-1 and 0-100 formats)
+                        const normalized = gpu.memory_percent > 1 ? gpu.memory_percent / 100 : gpu.memory_percent;
+                        return normalized >= 0.95
+                          ? "bg-red-500"
+                          : normalized >= 0.85
+                          ? "bg-yellow-500"
+                          : "bg-blue-500";
+                      })()
+                    }`}
+                    style={{ width: `${gpu.memory_percent > 1 ? gpu.memory_percent : gpu.memory_percent * 100}%` }}
+                  />
+                </div>
+                <div className="text-right text-xs text-gray-400">
+                  {(gpu.memory_percent > 1 ? gpu.memory_percent : gpu.memory_percent * 100).toFixed(1)}%
+                </div>
               </div>
-              <div className="w-full bg-gray-700 rounded-full h-2 overflow-hidden">
-                <div
-                  className={`h-full transition-all duration-300 ${
-                    (() => {
-                      // Normalize to 0-1 range (handle both 0-1 and 0-100 formats)
-                      const normalized = gpu.memory_percent > 1 ? gpu.memory_percent / 100 : gpu.memory_percent;
-                      return normalized >= 0.95
-                        ? "bg-red-500"
-                        : normalized >= 0.85
-                        ? "bg-yellow-500"
-                        : "bg-blue-500";
-                    })()
-                  }`}
-                  style={{ width: `${gpu.memory_percent > 1 ? gpu.memory_percent : gpu.memory_percent * 100}%` }}
-                />
-              </div>
-              <div className="text-right text-xs text-gray-400">
-                {(gpu.memory_percent > 1 ? gpu.memory_percent : gpu.memory_percent * 100).toFixed(1)}%
-              </div>
-            </div>
 
-            {/* Utilization bar */}
-            <div className="space-y-1">
-              <div className="flex justify-between text-xs">
-                <span className="text-gray-400">Utilization</span>
-                <span>{gpu.utilization_percent}%</span>
-              </div>
-              <div className="w-full bg-gray-700 rounded-full h-2 overflow-hidden">
-                <div
-                  className="h-full bg-purple-500 transition-all duration-300"
-                  style={{ width: `${gpu.utilization_percent}%` }}
-                />
+              {/* Utilization bar */}
+              <div className="space-y-1">
+                <div className="flex justify-between text-xs">
+                  <span className="text-gray-400">Utilization</span>
+                  <span>{gpu.utilization_percent}%</span>
+                </div>
+                <div className="w-full bg-gray-700 rounded-full h-2 overflow-hidden">
+                  <div
+                    className="h-full bg-purple-500 transition-all duration-300"
+                    style={{ width: `${gpu.utilization_percent}%` }}
+                  />
+                </div>
               </div>
             </div>
+          ))
+        ) : (
+          <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+            <div className="text-gray-400 text-sm text-center">No GPU data available</div>
           </div>
-        ))}
+        )}
       </div>
 
       {/* CPU & RAM */}
@@ -264,7 +270,7 @@ export function SystemMonitor({
               <option value="cpu">CPU</option>
               <option value="ram">RAM</option>
             </select>
-            {selectedMetric.startsWith("gpu") && current.gpus.length > 1 && (
+            {selectedMetric.startsWith("gpu") && current.gpus && current.gpus.length > 1 && (
               <select
                 value={selectedGpu}
                 onChange={(e) => setSelectedGpu(Number(e.target.value))}
