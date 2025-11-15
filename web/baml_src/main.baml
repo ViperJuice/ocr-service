@@ -452,3 +452,16 @@ function HandleUserMessage(
     {{ ctx.output_format(prefix="Return the complete orchestration plan with user_message:\n") }}
   "#
 }
+
+// ============================================================================
+// TYPESCRIPT CODE GENERATION
+// ============================================================================
+
+generator typescript_target {
+  output_type "typescript"
+  output_dir "../"
+  default_client_mode "async"
+  version "0.213.0"
+  module_format "esm"
+  on_generate "prettier --write baml_client/**/*.ts || true"
+}

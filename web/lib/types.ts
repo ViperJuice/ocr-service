@@ -1,19 +1,44 @@
 // ============================================================================
+// BAML-Generated Types
+// ============================================================================
+
+// Import BAML-generated types (single source of truth)
+import type {
+  ProcessingOptions,
+  OCRJobParameters,
+  FormatReference,
+  PageRange,
+  UserIntent,
+  RefactoredPrompts,
+  ToolCall,
+  ToolCallSequence,
+  ValidationResult,
+  OrchestrationResult,
+} from "@/lib/baml-wrapper";
+
+// Re-export BAML types for convenience
+export type {
+  ProcessingOptions,
+  OCRJobParameters,
+  FormatReference,
+  PageRange,
+  UserIntent,
+  RefactoredPrompts,
+  ToolCall,
+  ToolCallSequence,
+  ValidationResult,
+  OrchestrationResult,
+};
+
+// Backward compatibility aliases
+export type JobSubmitRequest = OCRJobParameters;
+export type CustomPrompts = Record<string, string>;
+
+// ============================================================================
 // Core Types
 // ============================================================================
 
 export type OutputFormat = "markdown" | "text" | "json";
-
-export interface ProcessingOptions {
-  dpi?: number;
-  method?: "auto" | "extract" | "ocr" | "hybrid";
-  start_page?: number;
-  end_page?: number;
-  staged_pipeline?: boolean;
-  prefer_quality?: boolean;
-}
-
-export type CustomPrompts = Record<string, string>;
 
 // ============================================================================
 // File Upload Types
@@ -48,14 +73,7 @@ export interface DirectoryInfo {
 
 export type JobStatus = "queued" | "processing" | "completed" | "failed" | "cancelled";
 
-export interface JobSubmitRequest {
-  file_id: string;
-  model?: string;
-  prompt_type?: string;
-  custom_prompts?: CustomPrompts;
-  processing_options?: ProcessingOptions;
-  output_format?: OutputFormat;
-}
+// Note: JobSubmitRequest is now an alias to OCRJobParameters (defined at top)
 
 export interface JobCreatedResponse {
   job_id: string;
