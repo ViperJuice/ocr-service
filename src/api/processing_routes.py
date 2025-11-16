@@ -337,84 +337,110 @@ async def cancel_job(
     )
 
 
+# PHASE 4: SSE endpoint deprecated - Use Supabase Realtime instead
+#
+# @router.get("/jobs/{job_id}/stream-results")
+# async def stream_job_results(
+#     job_id: str,
+#     job_manager: JobManager = Depends(get_job_manager)
+# ):
+#     """
+#     Server-Sent Events (SSE) stream of page results as they complete.
+#
+#     Args:
+#         job_id: Job ID
+#
+#     Returns:
+#         SSE stream with ocr_page_complete, merge_page_complete, stage_complete events
+#     """
+#     # Verify job exists
+#     try:
+#         job = job_manager.get_job(job_id)
+#     except ValueError:
+#         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+#
+#     result_emitter = get_result_emitter()
+#
+#     async def event_generator():
+#         """Generate SSE events for this job."""
+#         client_queue = asyncio.Queue()
+#
+#         try:
+#             # Register this client
+#             await result_emitter.register_client(job_id, client_queue)
+#             logger.info(f"[DEBUG SSE] Client connected and registered for job {job_id}")
+#
+#             # If job is already completed, send completion event
+#             if job.status == JobStatus.COMPLETED:
+#                 event = {
+#                     "event": "job_complete",
+#                     "data": {"timestamp": job.completed_at.isoformat() + 'Z' if job.completed_at else ""}
+#                 }
+#                 yield f"event: {event['event']}\ndata: {json.dumps(event['data'])}\n\n"
+#                 return
+#
+#             # Stream events as they arrive
+#             while True:
+#                 try:
+#                     # Wait for next event with timeout
+#                     event = await asyncio.wait_for(client_queue.get(), timeout=30.0)
+#
+#                     # Format as SSE
+#                     event_type = event.get("event", "message")
+#                     data = json.dumps(event.get("data", {}))
+#                     logger.info(f"[DEBUG SSE] Sending event '{event_type}' to client for job {job_id}")
+#                     yield f"event: {event_type}\ndata: {data}\n\n"
+#
+#                     # Exit if job complete
+#                     if event_type == "job_complete":
+#                         break
+#
+#                 except asyncio.TimeoutError:
+#                     # Send keepalive
+#                     logger.debug(f"[DEBUG SSE] Sending keepalive for job {job_id}")
+#                     yield ": keepalive\n\n"
+#
+#         except asyncio.CancelledError:
+#             logger.info(f"SSE client disconnected for job {job_id}")
+#         except Exception as e:
+#             logger.error(f"Error in SSE stream for job {job_id}: {e}")
+#             error_data = json.dumps({"error": str(e)})
+#             yield f"event: error\ndata: {error_data}\n\n"
+#         finally:
+#             # Unregister client
+#             await result_emitter.unregister_client(job_id, client_queue)
+#
+#     return StreamingResponse(
+#         event_generator(),
+#         media_type="text/event-stream",
+#         headers={
+#             "Cache-Control": "no-cache",
+#             "Connection": "keep-alive",
+#             "X-Accel-Buffering": "no"
+#         }
+#     )
+
+
 @router.get("/jobs/{job_id}/stream-results")
-async def stream_job_results(
-    job_id: str,
-    job_manager: JobManager = Depends(get_job_manager)
-):
+async def stream_results_deprecated(job_id: str):
     """
-    Server-Sent Events (SSE) stream of page results as they complete.
+    DEPRECATED: SSE endpoint removed in Phase 4.
 
-    Args:
-        job_id: Job ID
+    Use Supabase Realtime subscriptions instead:
+    - Frontend: useRealtimeJob hook
+    - Backend: Database writes trigger Realtime broadcasts
 
-    Returns:
-        SSE stream with ocr_page_complete, merge_page_complete, stage_complete events
+    See Also:
+    - web/hooks/useRealtimeJob.ts
+    - specs/PHASE_4_IMPLEMENTATION_PLAN.md
     """
-    # Verify job exists
-    try:
-        job = await job_manager.get_job(job_id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
-
-    result_emitter = get_result_emitter()
-
-    async def event_generator():
-        """Generate SSE events for this job."""
-        client_queue = asyncio.Queue()
-
-        try:
-            # Register this client
-            await result_emitter.register_client(job_id, client_queue)
-            logger.info(f"[DEBUG SSE] Client connected and registered for job {job_id}")
-
-            # If job is already completed, send completion event
-            if job.status == JobStatus.COMPLETED:
-                event = {
-                    "event": "job_complete",
-                    "data": {"timestamp": job.completed_at.isoformat() + 'Z' if job.completed_at else ""}
-                }
-                yield f"event: {event['event']}\ndata: {json.dumps(event['data'])}\n\n"
-                return
-
-            # Stream events as they arrive
-            while True:
-                try:
-                    # Wait for next event with timeout
-                    event = await asyncio.wait_for(client_queue.get(), timeout=30.0)
-
-                    # Format as SSE
-                    event_type = event.get("event", "message")
-                    data = json.dumps(event.get("data", {}))
-                    logger.info(f"[DEBUG SSE] Sending event '{event_type}' to client for job {job_id}")
-                    yield f"event: {event_type}\ndata: {data}\n\n"
-
-                    # Exit if job complete
-                    if event_type == "job_complete":
-                        break
-
-                except asyncio.TimeoutError:
-                    # Send keepalive
-                    logger.debug(f"[DEBUG SSE] Sending keepalive for job {job_id}")
-                    yield ": keepalive\n\n"
-
-        except asyncio.CancelledError:
-            logger.info(f"SSE client disconnected for job {job_id}")
-        except Exception as e:
-            logger.error(f"Error in SSE stream for job {job_id}: {e}")
-            error_data = json.dumps({"error": str(e)})
-            yield f"event: error\ndata: {error_data}\n\n"
-        finally:
-            # Unregister client
-            await result_emitter.unregister_client(job_id, client_queue)
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "error": "SSE endpoint deprecated",
+            "message": "Use Supabase Realtime subscriptions instead",
+            "migration_guide": "See web/hooks/useRealtimeJob.ts",
+            "job_id": job_id
         }
     )
 
