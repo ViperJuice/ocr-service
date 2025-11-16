@@ -5,6 +5,7 @@ import { Loader2, CheckCircle, XCircle, AlertTriangle } from "lucide-react";
 import { MonitoringMetrics, JobStatus } from "@/lib/types";
 import { formatDuration } from "@/lib/utils";
 import { apiClient } from "@/lib/api-client";
+import { useMergeStreaming } from "@/hooks/useMergeStreaming";
 
 interface ProgressMonitorProps {
   jobId: string;
@@ -18,6 +19,9 @@ export function ProgressMonitor({ jobId, filename, onComplete, onError }: Progre
   const [status, setStatus] = useState<JobStatus>("queued");
   const [error, setError] = useState<string | null>(null);
   const [totalPagesProcessed, setTotalPagesProcessed] = useState<number>(0);
+
+  // Phase 3.6: Integrate merge streaming hook
+  const { mergeChunks, isStreamingActive, clearChunks } = useMergeStreaming(jobId);
 
   useEffect(() => {
     // Create SSE connection for real-time monitoring
@@ -166,6 +170,23 @@ export function ProgressMonitor({ jobId, filename, onComplete, onError }: Progre
             className="progress-fill"
             style={{ width: `${progress}%` }}
           />
+        </div>
+      )}
+
+      {/* Phase 3.6: Streaming merge text preview with typewriter effect */}
+      {stage === "merge" && currentPage > 0 && mergeChunks.has(currentPage) && (
+        <div className="mt-3 p-3 bg-primary/5 border border-primary/20 rounded-md" role="status" aria-live="polite" aria-label="Merge streaming preview">
+          <div className="text-xs text-text-muted mb-1.5 font-medium">
+            Live merge preview (Page {currentPage}):
+          </div>
+          <div className="text-sm text-text-secondary font-mono leading-relaxed max-h-24 overflow-y-auto">
+            <span className="streaming-text">
+              {mergeChunks.get(currentPage)}
+            </span>
+            {isStreamingActive.get(currentPage) && (
+              <span className="streaming-cursor" aria-hidden="true">|</span>
+            )}
+          </div>
         </div>
       )}
 
