@@ -472,7 +472,7 @@ class BatchManager:
 
                     # Wait for document to complete (async polling)
                     while True:
-                        job = job_manager.get_job(job.job_id)
+                        job = await job_manager.get_job(job.job_id)
                         if job.status.value in ['completed', 'failed', 'cancelled']:
                             break
                         await asyncio.sleep(1)  # Async sleep instead of blocking
