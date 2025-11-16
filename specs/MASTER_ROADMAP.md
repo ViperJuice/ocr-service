@@ -423,6 +423,303 @@ await job_repository.create_page_result(
 
 ---
 
+### Phase 3.7: Performance & Architecture Optimization ⏳ PENDING
+
+**Estimated Duration:** 22-30 hours (3-4 days)
+**Prerequisites:** Phase 3 complete and tested
+**Status:** Not started
+**Source:** [multi-page-parsing-architecture.md](multi-page-parsing-architecture.md)
+
+#### Objectives
+
+Address critical performance bottlenecks identified in the multi-page parsing architecture analysis before migrating to database-only operations in Phase 4.
+
+**Key Performance Issues:**
+1. **Sequential batch processing** - Documents processed one at a time (no parallelism)
+2. **Individual page processing** - Pages processed sequentially (no batching)
+3. **Excessive disk I/O** - 50-100+ writes per job (output, cache, checkpoint, DB)
+4. **Per-page database transactions** - 100+ individual INSERTs per document
+
+**Target Improvements:**
+- 10x reduction in disk I/O operations
+- 10x reduction in database transactions
+- 2x batch processing throughput
+- 3-5x per-document processing speedup
+- **Overall: 6-10x faster end-to-end processing**
+
+#### Why Phase 3.7 Before Phase 4?
+
+Phase 4 will remove in-memory state and rely exclusively on database operations. Current performance bottlenecks will be **amplified** when reading from database instead of memory. Fixing these issues now:
+
+- Makes Phase 4 migration smoother and faster
+- Provides immediate user-facing improvements
+- Easier to test with current dual-write architecture
+- Prevents performance regression in Phase 4
+
+#### Phase 3.7A: I/O Optimization & Quick Wins ⏳
+
+**Duration:** 4-6 hours
+**Priority:** ⭐⭐⭐⭐⭐ (Highest ROI)
+**Risk:** Low (all additive changes)
+
+**Deliverables:**
+
+**1. Output Write Buffering** (Recommendation #3 from multi-page analysis)
+- **File:** `src/preprocessing/staged_pipeline.py:708-731`
+- **Change:** Buffer 10 pages before writing to disk
+- **Current:** 100 pages = 100 disk writes
+- **After:** 100 pages = 10 disk writes (10x reduction)
+- **Effort:** 1 hour
+
+**2. Database Write Batching** (Recommendation #4)
+- **Files:**
+  - `src/database/repositories/job_repository.py:173-217`
+  - `src/preprocessing/staged_pipeline.py` (call sites)
+- **Change:** Add `bulk_create_page_results()` method
+- **Change:** Buffer page results, bulk insert every 10 pages
+- **Current:** 100 pages = 100 individual INSERTs
+- **After:** 100 pages = 10 bulk INSERTs (10x reduction)
+- **Effort:** 1-2 hours
+
+**3. Checkpoint Granularity** (Recommendation #5)
+- **File:** `src/preprocessing/checkpoint_manager.py`
+- **Change:** Save checkpoint every 5 pages OR every 30 seconds (whichever first)
+- **Current:** 100 pages = 100 checkpoint writes
+- **After:** 100 pages = 20 checkpoint writes (5x reduction)
+- **Effort:** 1 hour
+
+**4. Automated Cache Cleanup** (Recommendation #6)
+- **Files:**
+  - `src/api/main.py` (startup event)
+  - `src/preprocessing/staged_pipeline.py` (finally block)
+- **Change:** Add hourly background task to cleanup expired caches/uploads
+- **Change:** Always cleanup cache in finally block (even on failure)
+- **Impact:** Prevent disk space leaks from failed jobs
+- **Effort:** 1-2 hours
+
+**Testing Requirements:**
+- [ ] Upload 50-page PDF, verify output file has ~5 buffered writes (not 50)
+- [ ] Check database: ~5 bulk inserts instead of 50 individual inserts
+- [ ] Verify checkpoint saved every 5 pages (~10 checkpoints for 50 pages)
+- [ ] Trigger job failure, verify cache directory cleaned up
+- [ ] Wait 1 hour, verify expired uploads deleted automatically
+
+**Success Criteria:**
+- ✅ 10x reduction in disk I/O operations
+- ✅ 10x reduction in database transactions
+- ✅ 5x reduction in checkpoint writes
+- ✅ Zero orphaned cache directories after 24 hours
+- ✅ No performance degradation
+- ✅ All existing tests pass
+
+#### Phase 3.7B: Batch Parallelization ⏳
+
+**Duration:** 6-8 hours
+**Priority:** ⭐⭐⭐⭐⭐ (Critical for multi-document workloads)
+**Risk:** Medium (concurrency complexity)
+
+**Objectives:**
+
+Enable concurrent processing of multiple documents in batch jobs to leverage existing `max_concurrent_jobs = 2` configuration.
+
+**Current Problem:**
+- Batch documents processed **sequentially** (one at a time)
+- 100-document batch with 2-min avg per doc = 200 minutes (3.3 hours)
+- Existing concurrency config unused for batches
+
+**Deliverables:**
+
+**1. Concurrent Batch Processing** (Recommendation #1 from multi-page analysis)
+- **File:** `src/api/services/batch_manager.py:191-335`
+- **Change:** Replace sequential loop with `asyncio.gather()` + `Semaphore`
+- **Change:** Process up to 2 documents concurrently (respects max_concurrent_jobs)
+- **Current:** 100 docs × 2 min = 200 minutes
+- **After:** 100 docs / 2 workers × 2 min = 100 minutes (2x speedup)
+- **Effort:** 4 hours
+
+**2. Concurrent Progress Tracking**
+- **File:** `src/api/batch_routes.py:262-332`
+- **Change:** Handle progress updates from multiple concurrent jobs
+- **Change:** Aggregate overall batch progress correctly
+- **Impact:** Accurate real-time progress during concurrent processing
+- **Effort:** 2 hours
+
+**3. Thread Safety Audit**
+- **Files:** `src/api/services/job_manager.py`, `src/api/services/result_emitter.py`
+- **Change:** Verify thread-safe access to shared state
+- **Change:** Add locks if needed
+- **Impact:** No race conditions or deadlocks
+- **Effort:** 2 hours
+
+**Testing Requirements:**
+- [ ] Submit 10-document batch, verify 2 jobs run simultaneously
+- [ ] Monitor system resources (CPU, memory) during concurrent processing
+- [ ] Verify batch progress updates correctly with concurrent jobs
+- [ ] Test error handling: 1 job fails, others continue
+- [ ] Verify results written correctly for all concurrent jobs
+
+**Success Criteria:**
+- ✅ 2x batch processing throughput
+- ✅ Batch progress accurately reflects concurrent jobs
+- ✅ No race conditions or deadlocks
+- ✅ Failed jobs don't block other jobs
+- ✅ System resource usage within limits
+
+#### Phase 3.7C: Page-Level Optimization ⏳
+
+**Duration:** 12-16 hours
+**Priority:** ⭐⭐⭐⭐⭐ (Critical for large documents)
+**Risk:** Medium-High (container changes required)
+
+**Objectives:**
+
+Optimize per-page processing through either mini-batch inference or parallel page processing to achieve 3-5x speedup for large documents.
+
+**Current Problem:**
+- Pages processed **sequentially** (one at a time)
+- 100-page document = 100-200 seconds (1.7-3.3 minutes)
+- GPU containers underutilized
+
+**Solution Options:**
+
+**Option A: Mini-Batch Inference** (Preferred)
+- Process 4-8 pages per container request
+- Requires container API to accept multiple images
+- Better GPU utilization (batch inference)
+- 100 pages / 4 pages per batch = 25 requests
+- Estimated time: 25 × 2.5 seconds = 62.5 seconds (3-4x speedup)
+
+**Option B: Parallel Page Processing** (Alternative)
+- Process multiple pages concurrently via ThreadPoolExecutor
+- Each page = separate container request
+- 4 parallel workers processing 100 pages
+- Estimated time: 100 pages / 4 workers = 25 seconds per worker (4-8x speedup)
+- Requires thread-safe container management
+
+**Deliverables (Option A: Mini-Batch):**
+
+**1. Container API Updates** (Recommendation #2 from multi-page analysis)
+- **File:** `src/preprocessing/model_manager.py`
+- **Change:** Add `infer_batch(model, images[])` method
+- **Change:** Send multiple images to container in single request
+- **Impact:** Enable batch processing
+- **Effort:** 4 hours
+
+**2. BAML Batch Support** (if needed)
+- **File:** `baml_src/ocr.baml`
+- **Change:** Add batch inference function (optional)
+- **Change:** Update type definitions for batch results
+- **Impact:** Type-safe batch operations
+- **Effort:** 2 hours
+
+**3. Pipeline Batch Processing**
+- **File:** `src/preprocessing/staged_pipeline.py:332-706`
+- **Change:** Replace sequential loop with batch loop (BATCH_SIZE = 4-8)
+- **Change:** Handle batch results, emit progress per batch
+- **Impact:** 3-4x speedup per document
+- **Effort:** 4 hours
+
+**4. Progress Tracking Updates**
+- **Files:** Result emitters, progress callbacks
+- **Change:** Emit progress after each batch (not each page)
+- **Change:** Update frontend to handle batch progress
+- **Impact:** Accurate progress for batched processing
+- **Effort:** 2 hours
+
+**Deliverables (Option B: Parallel Pages):**
+
+**1. Thread-Safe Container Management**
+- **File:** `src/preprocessing/model_manager.py`
+- **Change:** Add connection pooling or request locks
+- **Change:** Ensure concurrent requests handled safely
+- **Impact:** No race conditions
+- **Effort:** 4 hours
+
+**2. Parallel Pipeline Processing**
+- **File:** `src/preprocessing/staged_pipeline.py:332-706`
+- **Change:** Replace sequential loop with ThreadPoolExecutor
+- **Change:** Collect results as they complete
+- **Impact:** 4-8x speedup per document
+- **Effort:** 6 hours
+
+**3. Progress Tracking for Parallel**
+- **Files:** Result emitters, progress callbacks
+- **Change:** Handle out-of-order page completion
+- **Change:** Aggregate progress from parallel workers
+- **Impact:** Accurate progress during parallel processing
+- **Effort:** 2 hours
+
+**Testing Requirements:**
+- [ ] Verify containers accept multiple images (Option A) OR handle concurrent requests (Option B)
+- [ ] Test batch sizes: 4, 8, 16 pages (Option A) OR worker counts: 2, 4, 8 (Option B)
+- [ ] Measure actual speedup vs sequential baseline
+- [ ] Verify OCR quality unchanged (compare results)
+- [ ] Test with different page sizes/complexities
+- [ ] Monitor GPU utilization and memory usage
+
+**Success Criteria:**
+- ✅ 3-5x speedup for large documents (50+ pages)
+- ✅ OCR quality unchanged (same accuracy as sequential)
+- ✅ Progress tracking accurate during batch/parallel processing
+- ✅ No memory leaks or resource exhaustion
+- ✅ GPU utilization optimized (>80% during processing)
+
+**Decision Criteria: Option A vs B**
+
+Choose **Option A (Mini-Batch)** if:
+- GPU containers support batch inference
+- Prefer better GPU utilization
+- Lower risk of race conditions
+
+Choose **Option B (Parallel Pages)** if:
+- Containers don't support batch inference
+- Containers can handle concurrent requests
+- Have multiple GPU instances available
+
+#### Benefits Achieved (Phase 3.7 Complete)
+
+**Performance Improvements:**
+- ✅ 6-10x faster end-to-end processing
+- ✅ 10x reduction in disk I/O operations
+- ✅ 10x reduction in database transactions
+- ✅ 2x batch processing throughput
+- ✅ 3-5x per-document speedup
+
+**Operational Benefits:**
+- ✅ Automated cleanup prevents disk space leaks
+- ✅ Better resource utilization (CPU, GPU, disk)
+- ✅ Smoother transition to Phase 4 (database-only)
+- ✅ Improved user experience (faster results)
+
+**Example Impact:**
+- **Before:** 100-page document = 3-7 minutes, 100-doc batch = 16-33 hours
+- **After:** 100-page document = 45-90 seconds, 100-doc batch = 8-16 hours
+
+**Documentation:**
+- [multi-page-parsing-architecture.md](multi-page-parsing-architecture.md) - Source analysis
+- [PHASE_3.7_MERGE_PLAN.md](PHASE_3.7_MERGE_PLAN.md) - Integration plan
+
+#### Deferred Items (Phase 5 or Optional)
+
+The following low-priority recommendations from the multi-page analysis are deferred:
+
+**Recommendation #7: Sub-Page Progress Granularity** (ROI: ⭐⭐)
+- UX improvement: Show substeps ("extracting", "inferring", "merging")
+- Effort: Medium (2-4 hours)
+- Target: Phase 5 or Optional
+
+**Recommendation #8: Adaptive Batching Strategy** (ROI: ⭐⭐)
+- Dynamic strategy based on document sizes
+- Effort: High (6-8 hours)
+- Target: Phase 5 or Optional
+
+**Recommendation #9: Result Compression** (ROI: ⭐⭐)
+- Compress final output with gzip (60-80% storage reduction)
+- Effort: Low (1-2 hours)
+- Target: Phase 5 or Optional
+
+---
+
 ### Phase 4: Infrastructure Migration ⏳ PENDING
 
 **Estimated Duration:** 6-8 hours
@@ -671,8 +968,16 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=<production-anon-key>
 | SystemMonitor bug fix | 3 | None | 30 min |
 | Realtime validation | 3 | SystemMonitor fixed | 1 hour |
 | Performance comparison | 3 | Realtime tested | 1 hour |
-| Remove SSE | 4 | Phase 3 complete | 3 hours |
-| Remove in-memory state | 4 | Phase 3 complete | 4 hours |
+| Output write buffering | 3.7A | Phase 3 complete | 1 hour |
+| DB write batching | 3.7A | Phase 3 complete | 2 hours |
+| Checkpoint granularity | 3.7A | Phase 3 complete | 1 hour |
+| Cache cleanup automation | 3.7A | Phase 3 complete | 2 hours |
+| Concurrent batch processing | 3.7B | Phase 3 complete | 4 hours |
+| Concurrent progress tracking | 3.7B | Phase 3 complete | 2 hours |
+| Thread safety audit | 3.7B | Phase 3 complete | 2 hours |
+| Page-level optimization | 3.7C | Phase 3.7A complete | 12-16 hours |
+| Remove SSE | 4 | Phase 3.7 complete | 3 hours |
+| Remove in-memory state | 4 | Phase 3.7 complete | 4 hours |
 | Performance optimization | 5 | Phase 4 complete | 1 day |
 | Monitoring setup | 5 | Phase 4 complete | 1 day |
 | Cloud deployment | 6 | Phase 5 complete | 2 days |
@@ -974,6 +1279,16 @@ docker-compose up -d
 - [ ] Integration tests pass
 - [ ] Performance validated (Realtime faster than SSE)
 
+### Phase 3.7 ⏳
+- [ ] Output writes buffered (10 pages per write)
+- [ ] Database writes batched (bulk inserts every 10 pages)
+- [ ] Checkpoint saves reduced to 5-page intervals
+- [ ] Cache cleanup task running hourly
+- [ ] Batch jobs process 2 documents concurrently
+- [ ] Page processing 3-5x faster for large documents
+- [ ] All existing tests pass
+- [ ] Performance benchmarks documented (6-10x overall improvement)
+
 ### Phase 4 ⏳
 - [ ] SSE endpoints disabled
 - [ ] Frontend uses only Realtime
@@ -999,19 +1314,29 @@ docker-compose up -d
 
 ## Next Steps (Immediate)
 
-1. **Fix SystemMonitor Bug** (30 minutes)
-   - Add null safety checks for GPU data
-   - Test frontend loads without crash
-
-2. **Complete Phase 3 Testing** (2 hours)
-   - Run `test_realtime_simple.sh`
+1. **Complete Phase 3 Testing** (2 hours)
+   - Fix SystemMonitor bug (if needed)
+   - Run integration tests
    - Validate Realtime subscriptions
    - Document latency comparison
 
-3. **Plan Phase 4** (1 hour)
+2. **Implement Phase 3.7A: Quick Wins** (4-6 hours) ← **START HERE**
+   - Output write buffering (10 pages per write)
+   - Database write batching (bulk inserts)
+   - Checkpoint granularity (every 5 pages)
+   - Cache cleanup automation (hourly task)
+   - **Impact:** 10x I/O reduction, minimal risk, highest ROI
+
+3. **Decide on 3.7B vs 3.7C Priority** (based on workload)
+   - **Many small documents** → Implement 3.7B first (batch parallelization)
+   - **Few large documents** → Implement 3.7C first (page-level optimization)
+   - **Recommended:** Implement both before Phase 4 for maximum performance
+
+4. **Plan Phase 4 Migration** (1 hour)
    - Review SSE removal strategy
    - Plan in-memory state migration
    - Create rollback procedure
+   - Note: Phase 4 will be faster with 3.7 optimizations in place
 
 4. **Update Documentation** (ongoing)
    - Keep this master roadmap current
@@ -1026,6 +1351,7 @@ docker-compose up -d
 |---------|------|--------|---------|
 | 1.0 | 2025-11-15 | Claude Code | Initial unified specification |
 | 2.0 | 2025-11-15 | Claude Code | Merged BAML and Supabase tracks |
+| 3.0 | 2025-11-16 | Claude Code | Added Phase 3.7: Performance & Architecture Optimization |
 
 ---
 

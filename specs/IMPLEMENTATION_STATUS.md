@@ -13,6 +13,7 @@
 | Phase 1: Foundation | ✅ Complete | 100% | 2025-11-15 (Done) |
 | Phase 2: Core Integration | ✅ Complete | 100% | 2025-11-15 (Done) |
 | Phase 3: Real-Time Infrastructure | ✅ Code Complete | 95% | 2025-11-15 (Code) / TBD (Testing) |
+| Phase 3.7: Performance & Architecture | ⏳ Pending | 0% | TBD |
 | Phase 4: Infrastructure Migration | ⏳ Pending | 0% | TBD |
 | Phase 5: Production Readiness | ⏳ Pending | 0% | TBD |
 | Phase 6: Cloud Deployment | ⏳ Pending | 0% | TBD |
@@ -173,9 +174,81 @@
 
 ---
 
-### Phase 4: Infrastructure Migration ⏳ PENDING
+### Phase 3.7: Performance & Architecture Optimization ⏳ PENDING
 
 **Estimated Start:** After Phase 3 complete
+**Estimated Duration:** 22-30 hours (3-4 days)
+**Overall Status:** 0% complete
+**Source:** [multi-page-parsing-architecture.md](multi-page-parsing-architecture.md)
+
+#### Objectives
+
+Address critical performance bottlenecks identified in multi-page parsing architecture analysis:
+- 10x reduction in disk I/O operations
+- 10x reduction in database transactions
+- 2x batch processing throughput
+- 3-5x per-document speedup
+- **Overall: 6-10x faster end-to-end processing**
+
+#### Planned Work (3.7A: Quick Wins)
+
+| Component | Status | Estimated Time | Notes |
+|-----------|--------|----------------|-------|
+| Output write buffering | ⏳ | 1 hour | Buffer 10 pages per write |
+| DB write batching | ⏳ | 2 hours | Bulk inserts every 10 pages |
+| Checkpoint granularity | ⏳ | 1 hour | Save every 5 pages or 30s |
+| Cache cleanup automation | ⏳ | 2 hours | Hourly background task |
+
+**Subtotal:** 6 hours
+**ROI:** ⭐⭐⭐⭐⭐ (Highest)
+
+#### Planned Work (3.7B: Batch Parallelization)
+
+| Component | Status | Estimated Time | Notes |
+|-----------|--------|----------------|-------|
+| Concurrent batch processing | ⏳ | 4 hours | asyncio.gather + Semaphore |
+| Concurrent progress tracking | ⏳ | 2 hours | Aggregate from multiple jobs |
+| Thread safety audit | ⏳ | 2 hours | JobManager, ResultEmitter |
+
+**Subtotal:** 8 hours
+**ROI:** ⭐⭐⭐⭐⭐ (Critical for multi-document)
+
+#### Planned Work (3.7C: Page-Level Optimization)
+
+| Component | Status | Estimated Time | Notes |
+|-----------|--------|----------------|-------|
+| Container API updates | ⏳ | 4 hours | Mini-batch inference support |
+| BAML batch support | ⏳ | 2 hours | Optional, if using BAML |
+| Pipeline batch processing | ⏳ | 4 hours | Batch loop (4-8 pages) |
+| Progress tracking updates | ⏳ | 2 hours | Batch progress handling |
+| **OR** Thread-safe containers | ⏳ | 4 hours | Alternative: parallel pages |
+| **OR** Parallel pipeline | ⏳ | 6 hours | Alternative: ThreadPoolExecutor |
+
+**Subtotal:** 12-16 hours (depending on option)
+**ROI:** ⭐⭐⭐⭐⭐ (Critical for large documents)
+
+**Total Estimated Time:** 26-30 hours (3-4 days)
+**Prerequisites:** Phase 3 complete and tested
+**Blockers:** None (can start immediately after Phase 3)
+
+**Next Actions:**
+1. ✅ Phase 3.7 merged into MASTER_ROADMAP
+2. ⏳ Complete Phase 3 testing
+3. ⏳ Start with 3.7A (quick wins, highest ROI)
+4. ⏳ Then implement 3.7B or 3.7C based on workload priority
+5. ⏳ Document performance benchmarks (before/after)
+
+**Benefits (When Complete):**
+- 6-10x faster processing overall
+- Better resource utilization (CPU, GPU, disk)
+- Smoother Phase 4 migration (database-only will perform better)
+- Improved user experience (faster results)
+
+---
+
+### Phase 4: Infrastructure Migration ⏳ PENDING
+
+**Estimated Start:** After Phase 3.7 complete
 **Estimated Duration:** 6-8 hours
 **Overall Status:** 0% complete
 
@@ -302,17 +375,31 @@ All previously critical issues have been resolved:
    - ⏳ Add actual performance metrics (when tested)
    - ⏳ Add screenshots of console logs
    - Any issues discovered
-   - Recommendations for Phase 4
+   - Recommendations for Phase 3.7
 
 ### Next Week
 
-4. **Plan Phase 4 Migration** (2 hours)
+5. **Implement Phase 3.7A: Quick Wins** (4-6 hours) ← **START HERE**
+   - Output write buffering (10 pages per write)
+   - Database write batching (bulk inserts every 10 pages)
+   - Checkpoint granularity (every 5 pages or 30 seconds)
+   - Cache cleanup automation (hourly background task)
+   - **Highest ROI, minimal risk**
+
+6. **Implement Phase 3.7B or 3.7C** (based on workload priority)
+   - **Many small documents** → 3.7B first (concurrent batch processing)
+   - **Few large documents** → 3.7C first (page-level optimization)
+   - Recommended: Implement both before Phase 4
+
+7. **Plan Phase 4 Migration** (1 hour)
    - Review SSE removal strategy
    - Plan in-memory state migration
    - Create detailed task breakdown
    - Document rollback procedure
+   - Note: Phase 4 will be faster with 3.7 optimizations in place
 
-5. **Begin Phase 4 Implementation** (TBD)
+8. **Begin Phase 4 Implementation** (TBD)
+   - Prerequisite: Phase 3.7 complete
    - Start with SSE removal
    - Then in-memory state removal
    - Extensive testing after each change
@@ -324,14 +411,15 @@ All previously critical issues have been resolved:
 ### Completion by Phase
 
 ```
-Phase 1: ████████████████████ 100% ✅
-Phase 2: ████████████████████ 100% ✅
-Phase 3: ██████████████████░░  90% 🔄
-Phase 4: ░░░░░░░░░░░░░░░░░░░░   0% ⏳
-Phase 5: ░░░░░░░░░░░░░░░░░░░░   0% ⏳
-Phase 6: ░░░░░░░░░░░░░░░░░░░░   0% ⏳
+Phase 1:   ████████████████████ 100% ✅
+Phase 2:   ████████████████████ 100% ✅
+Phase 3:   ██████████████████░░  90% 🔄
+Phase 3.7: ░░░░░░░░░░░░░░░░░░░░   0% ⏳
+Phase 4:   ░░░░░░░░░░░░░░░░░░░░   0% ⏳
+Phase 5:   ░░░░░░░░░░░░░░░░░░░░   0% ⏳
+Phase 6:   ░░░░░░░░░░░░░░░░░░░░   0% ⏳
 
-Overall: █████████░░░░░░░░░░░  50% 🔄
+Overall:   ███████░░░░░░░░░░░░░  40% 🔄
 ```
 
 ### Completion by Track
@@ -349,12 +437,14 @@ Integration:      ██████████████░░░░░░  
 | Phase 1 | 2-3 hours | 2 hours | ✅ On target |
 | Phase 2 | 4-6 hours | 4 hours | ✅ On target |
 | Phase 3 | 3-4 hours | 3 hours (pending) | ⏳ In progress |
+| Phase 3.7 | 22-30 hours | - | - |
 | Phase 4 | 6-8 hours | - | - |
 | Phase 5 | 1-2 days | - | - |
 | Phase 6 | 1-2 days | - | - |
 
 **Total So Far:** ~9 hours invested (Phases 1-2 complete, Phase 3 in progress)
-**Remaining Estimate:** ~4-5 days (Phases 3-6)
+**Remaining Estimate:** ~6-9 days (Phases 3-6 + 3.7)
+**Note:** Phase 3.7 adds 3-4 days but provides 6-10x performance improvement
 
 ---
 
