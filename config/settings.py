@@ -81,6 +81,10 @@ class Settings(BaseSettings):
         description="Cache backend"
     )
     cache_ttl: int = Field(default=3600, description="Cache TTL in seconds")
+    enable_merge_streaming: bool = Field(
+        default=True,
+        description="Enable streaming merge text chunks (Phase 3.6)"
+    )
     
     # Logging
     log_level: str = Field(default="INFO", description="Logging level")
