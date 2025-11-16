@@ -259,74 +259,99 @@ async def cancel_batch_job(
         raise HTTPException(status_code=500, detail=f"Failed to cancel batch job: {str(e)}")
 
 
+# PHASE 4: SSE endpoint deprecated - Use Supabase Realtime instead
+#
+# @router.get("/progress/stream")
+# async def stream_progress(
+#     progress_emitter: ProgressEmitter = Depends(get_progress_emitter)
+# ):
+#     """
+#     Server-Sent Events stream for real-time progress updates.
+#
+#     This endpoint provides a continuous stream of progress events for all jobs and batches.
+#     Events include:
+#     - job_progress: Individual job progress updates
+#     - document_progress: Document-level progress in batch jobs
+#     - batch_progress: Batch-level aggregated progress
+#     - completion: Job/batch completion notifications
+#     - error: Error notifications
+#
+#     Returns:
+#         StreamingResponse: SSE stream with progress events
+#     """
+#     connection_id = str(uuid.uuid4())
+#
+#     async def event_generator():
+#         """Generate SSE events from progress emitter."""
+#         queue = None
+#         try:
+#             # Register connection with progress emitter
+#             queue = await progress_emitter.register_connection(connection_id)
+#             logger.info(f"Progress stream connection registered: {connection_id}")
+#
+#             # Send initial connection success event
+#             yield f"event: connected\ndata: {json.dumps({'connection_id': connection_id})}\n\n"
+#
+#             # Stream events from queue
+#             while True:
+#                 try:
+#                     # Wait for event with timeout for keepalive
+#                     event = await asyncio.wait_for(queue.get(), timeout=30.0)
+#
+#                     # Format as SSE event
+#                     event_type = event.get("event_type", "message")
+#                     event_data = json.dumps(event.get("data", {}))
+#
+#                     yield f"event: {event_type}\ndata: {event_data}\n\n"
+#
+#                 except asyncio.TimeoutError:
+#                     # Send keepalive comment
+#                     yield ": keepalive\n\n"
+#
+#         except asyncio.CancelledError:
+#             # Client disconnected
+#             logger.info(f"Progress stream client disconnected: {connection_id}")
+#
+#         except Exception as e:
+#             logger.error(f"Error in progress stream: {e}", exc_info=True)
+#             error_data = json.dumps({"error": str(e)})
+#             yield f"event: error\ndata: {error_data}\n\n"
+#
+#         finally:
+#             # Unregister connection
+#             if queue is not None:
+#                 await progress_emitter.unregister_connection(connection_id)
+#                 logger.info(f"Progress stream connection unregistered: {connection_id}")
+#
+#     return StreamingResponse(
+#         event_generator(),
+#         media_type="text/event-stream",
+#         headers={
+#             "Cache-Control": "no-cache",
+#             "Connection": "keep-alive",
+#             "X-Accel-Buffering": "no"  # Disable nginx buffering
+#         }
+#     )
+
+
 @router.get("/progress/stream")
-async def stream_progress(
-    progress_emitter: ProgressEmitter = Depends(get_progress_emitter)
-):
+async def stream_progress_deprecated():
     """
-    Server-Sent Events stream for real-time progress updates.
+    DEPRECATED: SSE endpoint removed in Phase 4.
 
-    This endpoint provides a continuous stream of progress events for all jobs and batches.
-    Events include:
-    - job_progress: Individual job progress updates
-    - document_progress: Document-level progress in batch jobs
-    - batch_progress: Batch-level aggregated progress
-    - completion: Job/batch completion notifications
-    - error: Error notifications
+    Use Supabase Realtime subscriptions instead:
+    - Frontend: useRealtimeBatch hook
+    - Backend: Database writes trigger Realtime broadcasts
 
-    Returns:
-        StreamingResponse: SSE stream with progress events
+    See Also:
+    - web/hooks/useRealtimeBatch.ts
+    - specs/PHASE_4_IMPLEMENTATION_PLAN.md
     """
-    connection_id = str(uuid.uuid4())
-
-    async def event_generator():
-        """Generate SSE events from progress emitter."""
-        queue = None
-        try:
-            # Register connection with progress emitter
-            queue = await progress_emitter.register_connection(connection_id)
-            logger.info(f"Progress stream connection registered: {connection_id}")
-
-            # Send initial connection success event
-            yield f"event: connected\ndata: {json.dumps({'connection_id': connection_id})}\n\n"
-
-            # Stream events from queue
-            while True:
-                try:
-                    # Wait for event with timeout for keepalive
-                    event = await asyncio.wait_for(queue.get(), timeout=30.0)
-
-                    # Format as SSE event
-                    event_type = event.get("event_type", "message")
-                    event_data = json.dumps(event.get("data", {}))
-
-                    yield f"event: {event_type}\ndata: {event_data}\n\n"
-
-                except asyncio.TimeoutError:
-                    # Send keepalive comment
-                    yield ": keepalive\n\n"
-
-        except asyncio.CancelledError:
-            # Client disconnected
-            logger.info(f"Progress stream client disconnected: {connection_id}")
-
-        except Exception as e:
-            logger.error(f"Error in progress stream: {e}", exc_info=True)
-            error_data = json.dumps({"error": str(e)})
-            yield f"event: error\ndata: {error_data}\n\n"
-
-        finally:
-            # Unregister connection
-            if queue is not None:
-                await progress_emitter.unregister_connection(connection_id)
-                logger.info(f"Progress stream connection unregistered: {connection_id}")
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"  # Disable nginx buffering
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "error": "SSE endpoint deprecated",
+            "message": "Use Supabase Realtime subscriptions instead",
+            "migration_guide": "See web/hooks/useRealtimeBatch.ts"
         }
     )

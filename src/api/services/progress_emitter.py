@@ -1,8 +1,28 @@
-"""Centralized SSE progress emission service."""
+"""
+DEPRECATED (Phase 4): SSE-based progress emission replaced by Supabase Realtime.
+
+This module is kept for backwards compatibility during migration but will be
+removed in Phase 5.
+
+Migration Guide:
+- Backend: Database writes automatically trigger Realtime broadcasts
+- Frontend: Use useRealtimeBatch hook instead of SSE
+
+See Also:
+- specs/PHASE_4_IMPLEMENTATION_PLAN.md
+- web/hooks/useRealtimeBatch.ts
+"""
 import asyncio
 import json
 import logging
+import warnings
 from typing import Optional, Dict, Any
+
+warnings.warn(
+    "ProgressEmitter is deprecated. Use Supabase Realtime.",
+    DeprecationWarning,
+    stacklevel=2
+)
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +34,10 @@ class ProgressEmitter:
         """Initialize progress emitter with active connections."""
         self.connections: Dict[str, asyncio.Queue] = {}
         self.lock = asyncio.Lock()
+        logger.warning(
+            "ProgressEmitter is deprecated and will be removed in Phase 5. "
+            "Use Supabase Realtime subscriptions instead."
+        )
         logger.info("ProgressEmitter initialized")
 
     async def register_connection(self, connection_id: str) -> asyncio.Queue:

@@ -1,8 +1,28 @@
-"""Result emitter for streaming OCR results via SSE."""
+"""
+DEPRECATED (Phase 4): SSE-based result emission replaced by Supabase Realtime.
+
+This module is kept for backwards compatibility during migration but will be
+removed in Phase 5.
+
+Migration Guide:
+- Backend: Database writes automatically trigger Realtime broadcasts
+- Frontend: Use useRealtimeJob hook instead of SSE
+
+See Also:
+- specs/PHASE_4_IMPLEMENTATION_PLAN.md
+- web/hooks/useRealtimeJob.ts
+"""
 import asyncio
 import logging
+import warnings
 from typing import Dict, List, Any, Optional
 from datetime import datetime
+
+warnings.warn(
+    "ResultEmitter is deprecated. Use Supabase Realtime.",
+    DeprecationWarning,
+    stacklevel=2
+)
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +72,10 @@ class ResultEmitter:
         self._client_lock = asyncio.Lock()
         self._event_loop = event_loop  # Store reference to main event loop
         self._initialized = True
+        logger.warning(
+            "ResultEmitter is deprecated and will be removed in Phase 5. "
+            "Use Supabase Realtime subscriptions instead."
+        )
         logger.info("ResultEmitter initialized")
 
     async def register_client(self, job_id: str, queue: asyncio.Queue) -> None:
