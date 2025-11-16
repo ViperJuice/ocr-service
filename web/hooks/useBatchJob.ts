@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback } from "react";
 import { apiClient } from "@/lib/api-client";
 import {
   DirectoryInfo,
@@ -24,25 +24,11 @@ export function useBatchJob() {
   const [batchResult, setBatchResult] = useState<BatchResultResponse | null>(null);
   const [isUploading, setIsUploading] = useState(false);
 
-  // PHASE 3.5: Realtime subscription for dual-subscription pattern
+  // PHASE 4: Realtime-only subscription
   const {
-    batch: realtimeBatchJob,
-    isConnected: isRealtimeConnected,
-    latency: realtimeLatency
+    batch: currentBatchData,
+    isConnected
   } = useRealtimeBatch(currentBatchJob?.batch_job_id ?? null);
-
-  // Log comparison between SSE and Realtime updates
-  useEffect(() => {
-    if (realtimeBatchJob && currentBatchJob) {
-      console.log('[PHASE 3.5] Batch dual-subscription comparison:', {
-        batchJobId: currentBatchJob.batch_job_id,
-        realtimeConnected: isRealtimeConnected,
-        realtimeStatus: realtimeBatchJob.status,
-        realtimeProgress: `${realtimeBatchJob.documents_completed}/${realtimeBatchJob.total_documents}`,
-        realtimeLatency: realtimeLatency ? `${realtimeLatency}ms` : 'N/A',
-      });
-    }
-  }, [realtimeBatchJob, currentBatchJob, isRealtimeConnected, realtimeLatency]);
 
   const uploadDirectory = useCallback(async (files: FileList, name: string) => {
     setIsUploading(true);
@@ -85,17 +71,13 @@ export function useBatchJob() {
 
   return {
     currentDirectory,
-    currentBatchJob,
+    currentBatchJob: currentBatchData ?? currentBatchJob,
     batchResult,
     isUploading,
     uploadDirectory,
     submitBatchJob,
     fetchBatchResult,
     reset,
-
-    // PHASE 3.5: Realtime state
-    realtimeBatchJob,
-    isRealtimeConnected,
-    realtimeLatency,
+    isConnected,
   };
 }
