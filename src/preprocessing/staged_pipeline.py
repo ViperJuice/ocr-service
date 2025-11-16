@@ -943,13 +943,16 @@ Provide the most accurate merged version by combining both sources, fixing any O
             if self.result_emitter and self.job_id:
                 # Extract actual model from merge result metadata
                 actual_model = merge_model_result.metadata.get("actual_model", stage_config["model_name"])
+                # Check if streaming was used
+                streaming_complete = merge_model_result.metadata.get("streaming", False)
                 self.result_emitter.emit_merge_page(
                     job_id=self.job_id,
                     page_num=page_num,
                     text=merged_text,
                     processing_time=page_time,
                     total_pages=total_pages,
-                    model=actual_model
+                    model=actual_model,
+                    streaming_complete=streaming_complete
                 )
 
             # Save checkpoint
