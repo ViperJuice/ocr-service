@@ -353,10 +353,32 @@ class BatchManager:
                         )
 
                         # Calculate and emit batch progress (thread-safe)
-                        batch_progress_pct = ((idx + (progress_pct / 100.0)) / batch.total_documents) * 100.0
-
+                        # Use completed count + active jobs' progress for accurate concurrent tracking
                         with self.batch_lock:
-                            batch.overall_progress_pct = batch_progress_pct
+                            # Calculate active_files and failed_files counts (thread-safe)
+                            active_files_count = sum(
+                                1 for job_obj in batch.document_jobs.values()
+                                if job_obj.status.value == 'processing'
+                            )
+                            failed_files_count = sum(
+                                1 for job_obj in batch.document_jobs.values()
+                                if job_obj.status.value == 'failed'
+                            )
+
+                            # Calculate batch progress based on actual job states
+                            # Completed documents contribute 100%, active jobs contribute their current progress
+                            total_progress = completed_count * 100.0
+                            for job_obj in batch.document_jobs.values():
+                                if job_obj.status.value == 'processing':
+                                    total_progress += job_obj.progress_pct
+
+                            batch_progress_pct = (total_progress / batch.total_documents) if batch.total_documents > 0 else 0.0
+
+                            # Ensure monotonic increase
+                            if batch_progress_pct > batch.overall_progress_pct:
+                                batch.overall_progress_pct = batch_progress_pct
+                            else:
+                                batch_progress_pct = batch.overall_progress_pct
 
                         # Update database progress (Phase 2: dual-write)
                         if self.batch_repository and self._event_loop:
@@ -391,6 +413,8 @@ class BatchManager:
                                 overall_progress_pct=batch_progress_pct,
                                 documents_completed=completed_count,
                                 total_documents=batch.total_documents,
+                                active_files=active_files_count,
+                                failed_files=failed_files_count,
                                 current_document_id=job.job_id,
                                 current_document_progress=current_doc_progress
                             )

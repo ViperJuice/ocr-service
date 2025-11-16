@@ -83,6 +83,8 @@ class ProgressEmitter:
         overall_progress_pct: float,
         documents_completed: int,
         total_documents: int,
+        active_files: int = 0,
+        failed_files: int = 0,
         current_document_id: Optional[str] = None,
         current_document_progress: Optional[Dict[str, Any]] = None
     ) -> None:
@@ -94,6 +96,8 @@ class ProgressEmitter:
             overall_progress_pct: Overall batch progress percentage
             documents_completed: Number of documents completed
             total_documents: Total number of documents in batch
+            active_files: Number of documents currently being processed (default: 0)
+            failed_files: Number of documents that failed processing (default: 0)
             current_document_id: Currently processing document ID
             current_document_progress: Current document progress details
         """
@@ -103,6 +107,8 @@ class ProgressEmitter:
             "overall_progress_pct": overall_progress_pct,
             "documents_completed": documents_completed,
             "total_documents": total_documents,
+            "active_files": active_files,
+            "failed_files": failed_files,
         }
 
         if current_document_progress:
