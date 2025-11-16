@@ -10,7 +10,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from pathlib import Path
 
 from config.settings import get_settings
-from .services import FileManager, PromptManager, JobManager, BatchManager, ProgressEmitter
+from .services import FileManager, PromptManager, JobManager, BatchManager, ProgressEmitter, CacheCleanupService
 from .services.result_emitter import get_result_emitter, reset_result_emitter
 # GPU resource tracking removed - using container mode only
 from ..utils.system_monitor import SystemMonitor
@@ -33,6 +33,7 @@ batch_manager: BatchManager = None
 progress_emitter: ProgressEmitter = None
 model_manager = None
 system_monitor: SystemMonitor = None
+cache_cleanup_service: CacheCleanupService = None
 
 
 @asynccontextmanager
@@ -45,7 +46,7 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting OCR Service API...")
 
-    global file_manager, prompt_manager, job_manager, batch_manager, progress_emitter, model_manager, system_monitor
+    global file_manager, prompt_manager, job_manager, batch_manager, progress_emitter, model_manager, system_monitor, cache_cleanup_service
     settings = get_settings()
 
     # Initialize Supabase connection
@@ -154,6 +155,29 @@ async def lifespan(app: FastAPI):
         job_id="api_global"
     )
     system_monitor.start()
+
+    # Initialize cache cleanup service
+    cache_cleanup_service = CacheCleanupService(
+        upload_dir=Path(settings.api_temp_directory),
+        cache_dir=Path(settings.api_processing_directory),
+        max_age_hours=24
+    )
+    logger.info("✓ Cache cleanup service initialized")
+
+    # Schedule periodic cache cleanup (hourly)
+    async def run_periodic_cleanup():
+        """Run cache cleanup every hour."""
+        while True:
+            await asyncio.sleep(3600)  # 1 hour
+            try:
+                stats = await cache_cleanup_service.cleanup_expired_files()
+                logger.info(f"Periodic cache cleanup: {stats}")
+            except Exception as e:
+                logger.error(f"Periodic cache cleanup failed: {e}")
+
+    # Start background cleanup task
+    asyncio.create_task(run_periodic_cleanup())
+    logger.info("✓ Background cache cleanup task started (runs hourly)")
 
     # Set managers in route modules
     processing_routes.set_managers(file_manager, prompt_manager, job_manager, model_manager)
