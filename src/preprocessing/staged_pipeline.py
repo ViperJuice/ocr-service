@@ -623,6 +623,113 @@ class StagedPipelineProcessor:
             avg_page_time=stage_time / (total_pages - start_page)
         )
 
+    def _stream_merge_with_retry(
+        self,
+        image: Image.Image,
+        embedded_text: str,
+        ocr_text: str,
+        page_num: int,
+        max_retries: int = 3
+    ) -> str:
+        """
+        Stream merge text with OOM retry logic.
+
+        Progressively reduces image resolution on OOM errors.
+        Emits chunks via result_emitter during streaming.
+
+        Args:
+            image: PIL Image to process
+            embedded_text: Text embedded in PDF
+            ocr_text: Text extracted via OCR
+            page_num: Page number (for logging and events)
+            max_retries: Maximum retry attempts (default: 3)
+
+        Returns:
+            Complete merged text (accumulated from chunks)
+
+        Raises:
+            RuntimeError: If merge fails after all retry attempts
+            Exception: If non-OOM error occurs
+        """
+        resolution_steps = [1024, 768, 512]
+        accumulated_text = ""
+
+        for attempt in range(max_retries):
+            try:
+                # Adjust resolution for retry attempts
+                current_max_dim = resolution_steps[min(attempt, len(resolution_steps) - 1)]
+                if attempt > 0:
+                    logger.warning(
+                        f"OOM retry attempt {attempt + 1}/{max_retries}, "
+                        f"reducing resolution to {current_max_dim}px for page {page_num}"
+                    )
+                    image = resize_image_for_merge(image, max_dimension=current_max_dim)
+
+                # Stream chunks from merge service
+                chunk_generator = run_async_in_thread(
+                    self.baml_ocr_service.merge_texts_streaming(
+                        image=image,
+                        embedded_text=embedded_text,
+                        ocr_text=ocr_text
+                    ),
+                    self._event_loop
+                )
+
+                # Accumulate and emit chunks
+                accumulated_text = ""
+                for chunk in chunk_generator:
+                    accumulated_text += chunk
+
+                    # Emit chunk to frontend via SSE
+                    if self.result_emitter and self.job_id:
+                        self.result_emitter.emit_merge_chunk(
+                            job_id=self.job_id,
+                            page_num=page_num,
+                            chunk=chunk,
+                            is_final=False
+                        )
+
+                # Emit final chunk marker
+                if self.result_emitter and self.job_id:
+                    self.result_emitter.emit_merge_chunk(
+                        job_id=self.job_id,
+                        page_num=page_num,
+                        chunk="",
+                        is_final=True
+                    )
+
+                # Success - log and return
+                if attempt > 0:
+                    logger.info(
+                        f"Streaming merge succeeded on retry attempt {attempt + 1} "
+                        f"with resolution {current_max_dim}px for page {page_num}"
+                    )
+
+                return accumulated_text
+
+            except Exception as e:
+                # Check if this is an OOM error based on error message
+                error_msg = str(e).lower()
+                is_oom_error = (
+                    "out of memory" in error_msg or
+                    "cuda" in error_msg or
+                    "oom" in error_msg
+                )
+
+                if is_oom_error and attempt < max_retries - 1:
+                    logger.warning(
+                        f"CUDA OOM detected on page {page_num} attempt {attempt + 1}, "
+                        f"retrying with lower resolution..."
+                    )
+                    continue
+                else:
+                    # Not OOM or final attempt failed - re-raise
+                    logger.error(f"Streaming merge failed on page {page_num} attempt {attempt + 1}: {e}")
+                    raise
+
+        # Should not reach here, but for safety
+        raise RuntimeError(f"Failed to merge page {page_num} after {max_retries} attempts")
+
     def _run_merge_stage(
         self,
         pages_data: List,
@@ -732,66 +839,85 @@ Provide the most accurate merged version by combining both sources, fixing any O
                     {"page": idx, "stage": "merge"}
                 )
 
-            # Call merge model with OOM retry logic
-            # Use BAML service if available (type-safe operations with intelligent merging)
-            merge_model_result = None
-            max_retries = 3
-            resolution_steps = [1024, 768, 512]  # Progressive reduction
+            # Call merge model with feature flag for streaming vs non-streaming
+            # Check feature flag for streaming
+            from config.settings import get_settings
+            settings = get_settings()
 
-            for attempt in range(max_retries):
-                try:
-                    # Adjust resolution for retry attempts
-                    current_max_dim = resolution_steps[min(attempt, len(resolution_steps) - 1)]
-                    if attempt > 0:
-                        logger.warning(f"OOM retry attempt {attempt + 1}/{max_retries}, reducing resolution to {current_max_dim}px")
-                        merge_image = resize_image_for_merge(image, max_dimension=current_max_dim)
+            if settings.enable_merge_streaming and self.baml_ocr_service:
+                # Use streaming merge with OOM retry logic
+                merged_text = self._stream_merge_with_retry(
+                    image=merge_image,
+                    embedded_text=embedded_text or "",
+                    ocr_text=ocr_result.ocr_text,
+                    page_num=page_num
+                )
+                # Create mock result object with metadata for downstream compatibility
+                merge_model_result = type('StreamingResult', (object,), {
+                    'text': merged_text,
+                    'metadata': {'streaming': True, 'actual_model': stage_config["model_name"]}
+                })()
+            else:
+                # Use non-streaming merge (fallback or feature disabled)
+                # Use BAML service if available (type-safe operations with intelligent merging)
+                merge_model_result = None
+                max_retries = 3
+                resolution_steps = [1024, 768, 512]  # Progressive reduction
 
-                    if self.baml_ocr_service:
-                        merge_model_result = run_async_in_thread(
-                            self.baml_ocr_service.merge_texts(
-                                image=merge_image,  # Use resized image
-                                embedded_text=embedded_text or "",
-                                ocr_text=ocr_result.ocr_text,
-                                custom_prompt=self.custom_prompts.get("merge") if self.custom_prompts else None
-                            ),
-                            event_loop=self._event_loop
-                        )
-                    else:
-                        # Fallback to direct container call
-                        if attempt == 0:
-                            logger.warning("BAML service not available for merge, using direct container call")
-                        merge_model_result = run_async_in_thread(
-                            self.model_manager.infer_with_container(
-                                model_name=stage_config["model_name"],
-                                image=merge_image,  # Use resized image
-                                prompt=merge_prompt,
-                                prompt_type="merge",
-                                auto_unload=True  # Free GPU memory after inference
-                            ),
-                            event_loop=self._event_loop
-                        )
+                for attempt in range(max_retries):
+                    try:
+                        # Adjust resolution for retry attempts
+                        current_max_dim = resolution_steps[min(attempt, len(resolution_steps) - 1)]
+                        if attempt > 0:
+                            logger.warning(f"OOM retry attempt {attempt + 1}/{max_retries}, reducing resolution to {current_max_dim}px")
+                            merge_image = resize_image_for_merge(image, max_dimension=current_max_dim)
 
-                    # Success - break out of retry loop
-                    if attempt > 0:
-                        logger.info(f"Merge succeeded on retry attempt {attempt + 1} with resolution {current_max_dim}px")
-                    break
+                        if self.baml_ocr_service:
+                            merge_model_result = run_async_in_thread(
+                                self.baml_ocr_service.merge_texts(
+                                    image=merge_image,  # Use resized image
+                                    embedded_text=embedded_text or "",
+                                    ocr_text=ocr_result.ocr_text,
+                                    custom_prompt=self.custom_prompts.get("merge") if self.custom_prompts else None
+                                ),
+                                event_loop=self._event_loop
+                            )
+                        else:
+                            # Fallback to direct container call
+                            if attempt == 0:
+                                logger.warning("BAML service not available for merge, using direct container call")
+                            merge_model_result = run_async_in_thread(
+                                self.model_manager.infer_with_container(
+                                    model_name=stage_config["model_name"],
+                                    image=merge_image,  # Use resized image
+                                    prompt=merge_prompt,
+                                    prompt_type="merge",
+                                    auto_unload=True  # Free GPU memory after inference
+                                ),
+                                event_loop=self._event_loop
+                            )
 
-                except Exception as e:
-                    error_msg = str(e).lower()
-                    is_oom_error = "out of memory" in error_msg or "cuda" in error_msg or "oom" in error_msg
+                        # Success - break out of retry loop
+                        if attempt > 0:
+                            logger.info(f"Merge succeeded on retry attempt {attempt + 1} with resolution {current_max_dim}px")
+                        break
 
-                    if is_oom_error and attempt < max_retries - 1:
-                        logger.warning(f"CUDA OOM detected on attempt {attempt + 1}, retrying with lower resolution...")
-                        continue
-                    else:
-                        # Not OOM or final attempt failed - re-raise
-                        logger.error(f"Merge failed on attempt {attempt + 1}: {e}")
-                        raise
+                    except Exception as e:
+                        error_msg = str(e).lower()
+                        is_oom_error = "out of memory" in error_msg or "cuda" in error_msg or "oom" in error_msg
 
-            if merge_model_result is None:
-                raise RuntimeError("Merge model inference failed after all retry attempts")
+                        if is_oom_error and attempt < max_retries - 1:
+                            logger.warning(f"CUDA OOM detected on attempt {attempt + 1}, retrying with lower resolution...")
+                            continue
+                        else:
+                            # Not OOM or final attempt failed - re-raise
+                            logger.error(f"Merge failed on attempt {attempt + 1}: {e}")
+                            raise
 
-            merged_text = merge_model_result.text or ""
+                if merge_model_result is None:
+                    raise RuntimeError("Merge model inference failed after all retry attempts")
+
+                merged_text = merge_model_result.text or ""
             page_time = time.time() - page_start
 
             # Emit inference complete event and system message for UI

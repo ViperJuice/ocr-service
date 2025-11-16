@@ -81,11 +81,14 @@ class Settings(BaseSettings):
         description="Cache backend"
     )
     cache_ttl: int = Field(default=3600, description="Cache TTL in seconds")
+
+    # Phase 3.6: Merge Streaming Enhancement
     enable_merge_streaming: bool = Field(
-        default=True,
-        description="Enable streaming merge text chunks (Phase 3.6)"
+        default=False,
+        description="Enable streaming merge text chunks during processing (Phase 3.6). "
+                    "When enabled, merge stage emits progressive text chunks via SSE."
     )
-    
+
     # Logging
     log_level: str = Field(default="INFO", description="Logging level")
     log_format: Literal["json", "text"] = Field(default="json", description="Log format")
