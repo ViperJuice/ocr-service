@@ -711,7 +711,8 @@ class JobManager:
             job_id: Job identifier
             callback: Callback function(progress_pct, pages_completed, stage)
         """
-        self.progress_callbacks[job_id] = callback
+        with self.job_lock:
+            self.progress_callbacks[job_id] = callback
         logger.info(f"Progress callback set for job: {job_id}")
 
     def _emit_progress(
@@ -733,10 +734,13 @@ class JobManager:
         # Update job progress
         self.update_job_progress(job_id, progress_pct, pages_completed, stage)
 
-        # Call callback if registered
-        if job_id in self.progress_callbacks:
+        # Call callback if registered (thread-safe)
+        with self.job_lock:
+            callback = self.progress_callbacks.get(job_id)
+
+        if callback:
             try:
-                self.progress_callbacks[job_id](progress_pct, pages_completed, stage)
+                callback(progress_pct, pages_completed, stage)
             except Exception as e:
                 logger.error(f"Progress callback error for job {job_id}: {e}")
 
