@@ -1,3 +1,15 @@
+/**
+ * DEPRECATED (Phase 4): SSE-based streaming replaced by Supabase Realtime.
+ *
+ * This hook will be removed in Phase 5.
+ *
+ * Migration:
+ * - Use {@link useRealtimeJob} or {@link useRealtimeBatch} instead
+ * - SSE endpoints are deprecated and return 410 status
+ *
+ * See: specs/PHASE_4_IMPLEMENTATION_PLAN.md
+ */
+
 import { useState, useEffect, useRef } from "react";
 import { StreamResultEvent } from "@/lib/types";
 
@@ -24,6 +36,9 @@ interface StreamingResults {
 /**
  * Hook to consume SSE stream of OCR and merge results as they complete.
  *
+ * @deprecated Use {@link useRealtimeJob} or {@link useRealtimeBatch} instead
+ *             SSE endpoints deprecated in Phase 4, will be removed in Phase 5
+ *
  * @param jobId - Job ID to stream results for
  * @param enabled - Whether to start streaming (default: true)
  * @returns Streaming results state
@@ -37,6 +52,12 @@ const initialLoadingState: ModelLoadingState = {
 };
 
 export function useStreamingResults(jobId: string | null, enabled: boolean = true) {
+  console.warn(
+    'useStreamingResults is deprecated and will be removed in Phase 5. ' +
+    'Use useRealtimeJob or useRealtimeBatch instead. ' +
+    'SSE endpoints return 410 Gone.'
+  );
+
   const [ocrPages, setOcrPages] = useState<Map<number, string>>(new Map());
   const [mergePages, setMergePages] = useState<Map<number, string>>(new Map());
   const [ocrComplete, setOcrComplete] = useState(false);

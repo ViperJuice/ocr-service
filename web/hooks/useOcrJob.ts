@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiClient, ApiError } from "@/lib/api-client";
 import {
@@ -18,25 +18,11 @@ export function useOcrJob() {
   const [currentJob, setCurrentJob] = useState<JobCreatedResponse | null>(null);
   const [jobResult, setJobResult] = useState<JobResult | null>(null);
 
-  // PHASE 3.5: Realtime subscription for dual-subscription pattern
+  // PHASE 4: Realtime subscription (exclusive data source)
   const {
-    job: realtimeJob,
-    isConnected: isRealtimeConnected,
-    latency: realtimeLatency
+    job: currentJobData,
+    isConnected
   } = useRealtimeJob(currentJob?.job_id ?? null);
-
-  // Log comparison between SSE and Realtime updates
-  useEffect(() => {
-    if (realtimeJob && currentJob) {
-      console.log('[PHASE 3.5] Dual-subscription comparison:', {
-        jobId: currentJob.job_id,
-        realtimeConnected: isRealtimeConnected,
-        realtimeStatus: realtimeJob.status,
-        realtimeProgress: realtimeJob.progress_pct,
-        realtimeLatency: realtimeLatency ? `${realtimeLatency}ms` : 'N/A',
-      });
-    }
-  }, [realtimeJob, currentJob, isRealtimeConnected, realtimeLatency]);
 
   // Upload file mutation
   const uploadMutation = useMutation({
@@ -109,9 +95,9 @@ export function useOcrJob() {
   }, []);
 
   return {
-    // State
+    // State (Realtime data as primary source)
     currentFile,
-    currentJob,
+    currentJob: currentJobData ?? currentJob,
     jobResult,
 
     // Actions
@@ -128,10 +114,8 @@ export function useOcrJob() {
     uploadError: uploadMutation.error,
     submitError: submitJobMutation.error,
 
-    // PHASE 3.5: Realtime state
-    realtimeJob,
-    isRealtimeConnected,
-    realtimeLatency,
+    // PHASE 4: Realtime connection status
+    isConnected,
   };
 }
 
@@ -141,13 +125,6 @@ export function useJobStatus(jobId: string | null, enabled: boolean = true) {
     queryKey: ["job-status", jobId],
     queryFn: () => apiClient.getJobStatus(jobId!),
     enabled: enabled && !!jobId,
-    refetchInterval: (query) => {
-      const status = query.state.data?.status;
-      // Stop polling when job is done
-      if (status === "completed" || status === "failed" || status === "cancelled") {
-        return false;
-      }
-      return 2000; // Poll every 2 seconds
-    },
+    // PHASE 4: No polling needed with Realtime
   });
 }
