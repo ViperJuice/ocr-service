@@ -423,6 +423,117 @@ await job_repository.create_page_result(
 
 ---
 
+### Phase 3.6: Merge Streaming Enhancement ⏳ PENDING
+
+**Estimated Duration:** 2-3 hours
+**Prerequisites:** Phase 3 complete (GPU metrics fix)
+**Status:** Not started
+
+#### Objectives
+
+Add token-by-token streaming for merge stage to provide progressive visual feedback during page processing.
+
+**Current Behavior:**
+- Merge stage processes full page → waits 10-20s → emits complete result
+- Frontend receives complete merged text all at once per page
+
+**Target Behavior:**
+- Merge stage streams text chunks as generated → progressive display
+- Frontend shows text accumulating in real-time (typewriter effect)
+- Better user experience during long merge operations
+
+#### Deliverables
+
+**Backend Changes:**
+
+1. **Result Emitter Enhancement** (`src/api/services/result_emitter.py`)
+   - Add `emit_merge_chunk(job_id, page_num, chunk, chunk_index)` method
+   - Modify `emit_merge_page()` to add `streaming_complete` flag
+   - New SSE event: `merge_chunk` for incremental text
+
+2. **Pipeline Streaming** (`src/preprocessing/staged_pipeline.py`)
+   - Replace `merge_texts()` call with `merge_texts_streaming()`
+   - Implement async chunk collection and emission
+   - Maintain OOM retry logic with streaming support
+   - Accumulate chunks into final result
+
+**Frontend Changes:**
+
+3. **Merge Streaming Hook** (`web/hooks/useMergeStreaming.ts`)
+   - New hook to handle `merge_chunk` events
+   - Accumulate chunks per page
+   - Provide real-time text state
+
+4. **UI Integration** (`web/components/OcrJobView.tsx`)
+   - Display streaming merge text with typewriter effect
+   - Show blinking cursor during active streaming
+   - Smooth transition to final result
+
+#### Technical Details
+
+**SSE Event Schema:**
+```json
+{
+  "event": "merge_chunk",
+  "data": {
+    "page_num": 1,
+    "chunk": "The ",
+    "chunk_index": 0,
+    "timestamp": "2025-11-15T10:30:45.123Z"
+  }
+}
+```
+
+**Data Flow:**
+```
+Pipeline → baml_ocr_service.merge_texts_streaming()
+  → async for chunk in stream:
+      → result_emitter.emit_merge_chunk()
+      → SSE → Frontend accumulates chunks
+  → result_emitter.emit_merge_page(streaming_complete=True)
+```
+
+**Infrastructure Already Exists:**
+- BAML service has `merge_texts_streaming()` implemented (line 299-366)
+- HTTP client manager supports streaming responses
+- Frontend SSE infrastructure ready
+
+#### Benefits
+
+- **Better UX:** Users see progress instead of waiting for full page
+- **Engagement:** Visual feedback reduces perceived wait time
+- **Debugging:** Can see partial results if job fails mid-stream
+- **Future-proof:** Enables real-time editing/corrections
+
+#### Testing Requirements
+
+- ✅ Chunks stream in correct order
+- ✅ Final merged text matches accumulated chunks
+- ✅ OOM retry still works with streaming
+- ✅ Network disconnection handled gracefully
+- ✅ Frontend accumulates chunks correctly per page
+- ✅ Multiple pages stream independently
+
+#### Rollback Plan
+
+- Feature flag: `ENABLE_MERGE_STREAMING=false` in `.env`
+- Conditional logic preserves non-streaming fallback
+- Can disable without code changes
+
+#### Success Criteria
+
+- [ ] Merge chunks stream to frontend in real-time
+- [ ] TypeScript types updated for `merge_chunk` event
+- [ ] UI shows progressive text accumulation
+- [ ] No performance degradation
+- [ ] OOM protection still functional
+- [ ] Documentation updated
+
+**Documentation Reference:**
+- Will create: `specs/PHASE_3.6_MERGE_STREAMING.md`
+
+---
+
 ### Phase 3.7: Performance & Architecture Optimization ⏳ PENDING
 
 **Estimated Duration:** 22-30 hours (3-4 days)
@@ -723,7 +834,7 @@ The following low-priority recommendations from the multi-page analysis are defe
 ### Phase 4: Infrastructure Migration ⏳ PENDING
 
 **Estimated Duration:** 6-8 hours
-**Prerequisites:** Phase 3 complete and tested
+**Prerequisites:** Phase 3 complete and tested, Phase 3.7 complete (Phase 3.6 optional)
 **Status:** Not started
 
 #### Objectives
@@ -968,6 +1079,8 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=<production-anon-key>
 | SystemMonitor bug fix | 3 | None | 30 min |
 | Realtime validation | 3 | SystemMonitor fixed | 1 hour |
 | Performance comparison | 3 | Realtime tested | 1 hour |
+| Merge streaming backend | 3.6 | Phase 3 complete | 1 hour |
+| Merge streaming frontend | 3.6 | Phase 3 complete | 1-2 hours |
 | Output write buffering | 3.7A | Phase 3 complete | 1 hour |
 | DB write batching | 3.7A | Phase 3 complete | 2 hours |
 | Checkpoint granularity | 3.7A | Phase 3 complete | 1 hour |
@@ -1279,6 +1392,13 @@ docker-compose up -d
 - [ ] Integration tests pass
 - [ ] Performance validated (Realtime faster than SSE)
 
+### Phase 3.6 ⏳
+- [ ] Backend merge streaming implemented
+- [ ] Frontend merge streaming hook created
+- [ ] UI shows progressive text accumulation
+- [ ] OOM retry works with streaming
+- [ ] Feature flag for rollback
+
 ### Phase 3.7 ⏳
 - [ ] Output writes buffered (10 pages per write)
 - [ ] Database writes batched (bulk inserts every 10 pages)
@@ -1320,14 +1440,21 @@ docker-compose up -d
    - Validate Realtime subscriptions
    - Document latency comparison
 
-2. **Implement Phase 3.7A: Quick Wins** (4-6 hours) ← **START HERE**
+2. **Implement Phase 3.6: Merge Streaming** (2-3 hours) ← **OPTIONAL QUICK WIN**
+   - Add `emit_merge_chunk()` to result_emitter.py
+   - Update pipeline to use `merge_texts_streaming()`
+   - Create `useMergeStreaming.ts` hook
+   - Update UI components for progressive display
+   - **Impact:** Better UX, visual feedback during merge operations
+
+3. **Implement Phase 3.7A: Quick Wins** (4-6 hours) ← **START HERE**
    - Output write buffering (10 pages per write)
    - Database write batching (bulk inserts)
    - Checkpoint granularity (every 5 pages)
    - Cache cleanup automation (hourly task)
    - **Impact:** 10x I/O reduction, minimal risk, highest ROI
 
-3. **Decide on 3.7B vs 3.7C Priority** (based on workload)
+4. **Decide on 3.7B vs 3.7C Priority** (based on workload)
    - **Many small documents** → Implement 3.7B first (batch parallelization)
    - **Few large documents** → Implement 3.7C first (page-level optimization)
    - **Recommended:** Implement both before Phase 4 for maximum performance
