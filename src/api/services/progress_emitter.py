@@ -84,10 +84,32 @@ class ProgressEmitter:
         documents_completed: int,
         total_documents: int,
         current_document_id: Optional[str] = None,
-        current_document_progress: Optional[Dict[str, Any]] = None
+        current_document_progress: Optional[Dict[str, Any]] = None,
+        active_files: Optional[int] = None,
+        failed_files: Optional[int] = None
     ) -> None:
         """
         Emit progress update for a batch job.
+
+        Event Schema (Phase 3.7B - IF-1-3.7B):
+            {
+                "batch_job_id": str,
+                "status": "processing",
+                "overall_progress_pct": float,
+                "documents_completed": int,
+                "total_documents": int,
+                "active_files": int,  # Number of documents currently processing
+                "failed_files": int,
+                "current_document": dict (optional)
+            }
+
+        Progress Calculation:
+            overall_progress_pct = (documents_completed / total_documents) * 100
+            active_files = count of jobs in "processing" state for this batch
+
+        Thread Safety:
+            - Uses batch_manager.batch_lock for safe batch state access
+            - Uses job_manager.job_lock for safe job state access
 
         Args:
             batch_job_id: Batch job identifier
@@ -96,6 +118,8 @@ class ProgressEmitter:
             total_documents: Total number of documents in batch
             current_document_id: Currently processing document ID
             current_document_progress: Current document progress details
+            active_files: Number of documents currently processing (Phase 3.7B)
+            failed_files: Number of documents that failed (Phase 3.7B)
         """
         event_data = {
             "batch_job_id": batch_job_id,
@@ -103,6 +127,8 @@ class ProgressEmitter:
             "overall_progress_pct": overall_progress_pct,
             "documents_completed": documents_completed,
             "total_documents": total_documents,
+            "active_files": active_files if active_files is not None else 0,
+            "failed_files": failed_files if failed_files is not None else 0,
         }
 
         if current_document_progress:

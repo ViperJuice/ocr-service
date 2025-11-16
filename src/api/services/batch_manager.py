@@ -12,6 +12,30 @@ from ..models.batch import BatchJob, BatchJobStatus, BatchProgress
 logger = logging.getLogger(__name__)
 
 
+def _count_active_jobs_for_batch(batch_job_id: str, job_manager) -> int:
+    """
+    Count jobs currently in 'processing' state for this batch.
+
+    Thread Safety: Uses job_manager.job_lock for safe access.
+
+    Args:
+        batch_job_id: Batch job identifier
+        job_manager: JobManager instance
+
+    Returns:
+        Number of jobs in 'processing' state
+    """
+    active_count = 0
+    with job_manager.job_lock:
+        for job in job_manager.jobs.values():
+            # Check if job belongs to this batch and is processing
+            if (hasattr(job, 'parent_batch_id') and
+                job.parent_batch_id == batch_job_id and
+                job.status.value == 'processing'):
+                active_count += 1
+    return active_count
+
+
 def _run_async_in_thread(coro):
     """
     Safely run async coroutine from a thread.
@@ -358,6 +382,9 @@ class BatchManager:
                     else:
                         raise RuntimeError("Event loop not available for batch job creation")
 
+                    # Set parent batch ID for tracking (Phase 3.7B)
+                    job.parent_batch_id = batch.batch_job_id
+
                     # Add job to batch's document jobs (thread-safe)
                     with self.batch_lock:
                         batch.document_jobs[job.job_id] = job
@@ -413,6 +440,12 @@ class BatchManager:
                             "stage": stage
                         }
 
+                        # Count active jobs for this batch (Phase 3.7B: IF-1-3.7B)
+                        active_files_count = _count_active_jobs_for_batch(batch.batch_job_id, job_manager)
+
+                        # Calculate failed files (total - completed - active)
+                        failed_files_count = max(0, batch.total_documents - documents_completed_count - active_files_count)
+
                         _run_async_in_thread(
                             progress_emitter.emit_batch_progress(
                                 batch_job_id=batch.batch_job_id,
@@ -420,7 +453,9 @@ class BatchManager:
                                 documents_completed=documents_completed_count,
                                 total_documents=batch.total_documents,
                                 current_document_id=job.job_id,
-                                current_document_progress=current_doc_progress
+                                current_document_progress=current_doc_progress,
+                                active_files=active_files_count,
+                                failed_files=failed_files_count
                             )
                         )
 
