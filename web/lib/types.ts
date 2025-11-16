@@ -333,6 +333,17 @@ export interface MergePageCompleteEvent {
     processing_time?: number;  // Processing time in seconds
     total_pages?: number;      // Total pages in job
     model?: string;            // Optional model identifier (e.g., "Qwen/Qwen3-VL-8B-Instruct")
+    streaming_complete?: boolean;  // Whether this page was completed via streaming
+  };
+}
+
+export interface MergeChunkEvent {
+  event: "merge_chunk";
+  data: {
+    page_num: number;
+    chunk: string;
+    is_final: boolean;
+    timestamp: string;
   };
 }
 
@@ -391,6 +402,7 @@ export interface InferenceCompleteEvent {
 export type StreamResultEvent =
   | OcrPageCompleteEvent
   | MergePageCompleteEvent
+  | MergeChunkEvent
   | StageCompleteEvent
   | JobCompleteEvent
   | SystemMessageEvent
