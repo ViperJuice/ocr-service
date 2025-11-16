@@ -224,17 +224,25 @@ class BatchManager:
                 # Get file info
                 file_info = file_manager.get_file_info(file_id)
 
-                # Create individual job for this document
-                job = job_manager.create_job(
-                    file_id=file_id,
-                    filename=file_info.filename,
-                    model=batch.model,
-                    prompt_type=batch.prompt_type,
-                    custom_prompts=batch.custom_prompts,
-                    processing_options=batch.processing_options,
-                    output_format=batch.output_format,
-                    estimated_pages=file_info.page_count
-                )
+                # Create individual job for this document (from worker thread)
+                import asyncio
+                if job_manager._event_loop:
+                    future = asyncio.run_coroutine_threadsafe(
+                        job_manager.create_job(
+                            file_id=file_id,
+                            filename=file_info.filename,
+                            model=batch.model,
+                            prompt_type=batch.prompt_type,
+                            custom_prompts=batch.custom_prompts,
+                            processing_options=batch.processing_options,
+                            output_format=batch.output_format,
+                            estimated_pages=file_info.page_count
+                        ),
+                        job_manager._event_loop
+                    )
+                    job = future.result(timeout=10)
+                else:
+                    raise RuntimeError("Event loop not available for batch job creation")
 
                 # Add job to batch's document jobs
                 with self.batch_lock:

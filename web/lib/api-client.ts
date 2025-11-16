@@ -311,6 +311,15 @@ export function createMonitoringStream(jobId?: string): EventSource {
 }
 
 /**
+ * Create an EventSource connection for system-wide monitoring stream.
+ * Provides real-time GPU metrics, container status, and system resources.
+ */
+export function createSystemMonitoringStream(): EventSource {
+  const url = `${API_BASE_URL}/api/monitoring/system/stream`;
+  return new EventSource(url);
+}
+
+/**
  * Create an EventSource connection for streaming OCR and merge results.
  *
  * This establishes a Server-Sent Events connection to receive real-time
@@ -353,5 +362,6 @@ export const apiClient = {
   // SSE streaming
   createBatchProgressStream,
   createMonitoringStream,
+  createSystemMonitoringStream,
   createResultStream,
 };

@@ -32,7 +32,15 @@ class ResultEmitter:
         Args:
             event_loop: The main asyncio event loop (required for thread-safe operations)
         """
+        # Detect event loop changes (critical for uvicorn auto-reload)
         if self._initialized:
+            if event_loop is not None and self._event_loop != event_loop:
+                # Event loop changed - reinitialize with new loop
+                logger.warning("Event loop changed - reinitializing ResultEmitter")
+                self._clients.clear()
+                self._client_lock = asyncio.Lock()  # Create new lock for new event loop
+                self._event_loop = event_loop
+                logger.info("ResultEmitter reinitialized with new event loop")
             return
 
         self._clients: Dict[str, List[asyncio.Queue]] = {}
@@ -76,7 +84,7 @@ class ResultEmitter:
                 except ValueError:
                     pass  # Queue not in list
 
-    def emit_ocr_page(self, job_id: str, page_num: int, text: str) -> None:
+    def emit_ocr_page(self, job_id: str, page_num: int, text: str, model: Optional[str] = None) -> None:
         """
         Emit OCR page completion event (called from worker thread).
 
@@ -84,14 +92,20 @@ class ResultEmitter:
             job_id: Job identifier
             page_num: Page number (1-indexed)
             text: OCR text for this page
+            model: Optional model identifier (e.g., "deepseek-ai/DeepSeek-OCR")
         """
+        event_data = {
+            "page_num": page_num,
+            "text": text,
+            "timestamp": datetime.utcnow().isoformat() + 'Z'
+        }
+
+        if model:
+            event_data["model"] = model
+
         event = {
             "event": "ocr_page_complete",
-            "data": {
-                "page_num": page_num,
-                "text": text,
-                "timestamp": datetime.utcnow().isoformat() + 'Z'
-            }
+            "data": event_data
         }
 
         # Schedule broadcast in the main event loop from worker thread
@@ -109,7 +123,8 @@ class ResultEmitter:
         page_num: int,
         text: str,
         processing_time: Optional[float] = None,
-        total_pages: Optional[int] = None
+        total_pages: Optional[int] = None,
+        model: Optional[str] = None
     ) -> None:
         """
         Emit merge page completion event (called from worker thread).
@@ -120,6 +135,7 @@ class ResultEmitter:
             text: Merged text for this page
             processing_time: Optional processing time in seconds
             total_pages: Optional total pages in job
+            model: Optional model identifier (e.g., "Qwen/Qwen3-VL-8B-Instruct")
         """
         event_data = {
             "page_num": page_num,
@@ -132,6 +148,8 @@ class ResultEmitter:
             event_data["processing_time"] = processing_time
         if total_pages is not None:
             event_data["total_pages"] = total_pages
+        if model:
+            event_data["model"] = model
 
         event = {
             "event": "merge_page_complete",
@@ -146,6 +164,41 @@ class ResultEmitter:
             asyncio.run_coroutine_threadsafe(self._broadcast(job_id, event), self._event_loop)
         except Exception as e:
             logger.error(f"Failed to emit merge page {page_num} for job {job_id}: {e}")
+
+    def emit_merge_chunk(
+        self,
+        job_id: str,
+        page_num: int,
+        chunk: str,
+        is_final: bool = False
+    ) -> None:
+        """
+        Emit progressive merge text chunk as it's generated (called from worker thread).
+
+        Args:
+            job_id: Job identifier
+            page_num: Page number (1-indexed)
+            chunk: Partial or complete text chunk
+            is_final: Whether this is the final chunk for this page
+        """
+        event = {
+            "event": "merge_chunk",
+            "data": {
+                "page_num": page_num,
+                "chunk": chunk,
+                "is_final": is_final,
+                "timestamp": datetime.utcnow().isoformat() + 'Z'
+            }
+        }
+
+        # Schedule broadcast in the main event loop from worker thread
+        try:
+            if self._event_loop is None:
+                logger.error(f"Event loop not set - cannot emit merge chunk for page {page_num} job {job_id}")
+                return
+            asyncio.run_coroutine_threadsafe(self._broadcast(job_id, event), self._event_loop)
+        except Exception as e:
+            logger.error(f"Failed to emit merge chunk for page {page_num} job {job_id}: {e}")
 
     def emit_stage_complete(self, job_id: str, stage: str) -> None:
         """
@@ -280,6 +333,112 @@ class ResultEmitter:
         except Exception as e:
             logger.error(f"Failed to emit model loading complete for job {job_id}: {e}")
 
+    def emit_model_ready(self, job_id: str, stage: str, model_name: str) -> None:
+        """
+        Emit model ready event when a model container is ready to process.
+
+        Args:
+            job_id: Job identifier
+            stage: Stage name ('ocr' or 'merge')
+            model_name: Full model name (e.g., 'deepseek-ai/DeepSeek-OCR')
+        """
+        event = {
+            "event": "model_ready",
+            "data": {
+                "stage": stage,
+                "model": model_name,
+                "timestamp": datetime.utcnow().isoformat() + 'Z'
+            }
+        }
+
+        try:
+            if self._event_loop is None:
+                logger.error(f"Event loop not set - cannot emit model ready for job {job_id}")
+                return
+            asyncio.run_coroutine_threadsafe(self._broadcast(job_id, event), self._event_loop)
+        except Exception as e:
+            logger.error(f"Failed to emit model ready for job {job_id}: {e}")
+
+    def emit_system_message(self, job_id: str, message: str, metadata: Optional[Dict[str, Any]] = None) -> None:
+        """
+        Emit system message event (e.g., container orchestration status).
+
+        Args:
+            job_id: Job identifier
+            message: System message to display
+            metadata: Optional metadata for the message
+        """
+        event = {
+            "event": "system_message",
+            "data": {
+                "message": message,
+                "metadata": metadata or {},
+                "timestamp": datetime.utcnow().isoformat() + 'Z'
+            }
+        }
+
+        try:
+            if self._event_loop is None:
+                logger.error(f"Event loop not set - cannot emit system message for job {job_id}")
+                return
+            asyncio.run_coroutine_threadsafe(self._broadcast(job_id, event), self._event_loop)
+        except Exception as e:
+            logger.error(f"Failed to emit system message for job {job_id}: {e}")
+
+    def emit_inference_start(self, job_id: str, page_num: int, stage: str) -> None:
+        """
+        Emit when inference starts for a page (called from worker thread).
+
+        Args:
+            job_id: Job identifier
+            page_num: Page number being processed
+            stage: Stage name ("ocr" or "merge")
+        """
+        event = {
+            "event": "inference_start",
+            "data": {
+                "page_num": page_num,
+                "stage": stage,
+                "timestamp": datetime.utcnow().isoformat() + 'Z'
+            }
+        }
+
+        try:
+            if self._event_loop is None:
+                logger.error(f"Event loop not set - cannot emit inference start for job {job_id}")
+                return
+            asyncio.run_coroutine_threadsafe(self._broadcast(job_id, event), self._event_loop)
+        except Exception as e:
+            logger.error(f"Failed to emit inference start for job {job_id}: {e}")
+
+    def emit_inference_complete(self, job_id: str, page_num: int, stage: str, duration_seconds: float) -> None:
+        """
+        Emit when inference completes for a page (called from worker thread).
+
+        Args:
+            job_id: Job identifier
+            page_num: Page number that was processed
+            stage: Stage name ("ocr" or "merge")
+            duration_seconds: Time taken for inference in seconds
+        """
+        event = {
+            "event": "inference_complete",
+            "data": {
+                "page_num": page_num,
+                "stage": stage,
+                "duration_seconds": duration_seconds,
+                "timestamp": datetime.utcnow().isoformat() + 'Z'
+            }
+        }
+
+        try:
+            if self._event_loop is None:
+                logger.error(f"Event loop not set - cannot emit inference complete for job {job_id}")
+                return
+            asyncio.run_coroutine_threadsafe(self._broadcast(job_id, event), self._event_loop)
+        except Exception as e:
+            logger.error(f"Failed to emit inference complete for job {job_id}: {e}")
+
     async def _broadcast(self, job_id: str, event: Dict[str, Any]) -> None:
         """
         Broadcast event to all registered clients for a job.
@@ -317,3 +476,26 @@ def get_result_emitter() -> ResultEmitter:
     if _emitter_instance is None:
         _emitter_instance = ResultEmitter()
     return _emitter_instance
+
+
+def reset_result_emitter() -> None:
+    """
+    Reset the ResultEmitter singleton for clean shutdown/reload.
+
+    This is critical for uvicorn auto-reload to work properly.
+    When uvicorn creates a new event loop, we need to reset
+    the singleton so it reinitializes with the new loop.
+    """
+    global _emitter_instance
+
+    if _emitter_instance is not None:
+        # Clear all client connections
+        _emitter_instance._clients.clear()
+        _emitter_instance._initialized = False
+        _emitter_instance._event_loop = None
+        _emitter_instance = None
+
+        # Also reset class-level singleton
+        ResultEmitter._instance = None
+
+        logger.info("ResultEmitter singleton reset complete")

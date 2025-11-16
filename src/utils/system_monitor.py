@@ -14,11 +14,17 @@ logger = logging.getLogger(__name__)
 
 try:
     import pynvml
-    import torch
     NVML_AVAILABLE = True
 except ImportError:
     NVML_AVAILABLE = False
     logger.warning("pynvml not available, GPU monitoring disabled")
+
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+    logger.info("torch not available, additional GPU metrics disabled")
 
 
 class SystemMonitor:
@@ -199,7 +205,6 @@ class SystemMonitor:
         # GPU metrics with enhanced memory tracking
         if self.gpu_available:
             try:
-                import torch
                 metrics['gpus'] = []
                 for i, handle in enumerate(self.gpu_handles):
                     mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
@@ -222,7 +227,7 @@ class SystemMonitor:
                         gpu_metrics['temperature_c'] = temperature
 
                     # Enhanced PyTorch memory tracking
-                    if torch.cuda.is_available() and i < torch.cuda.device_count():
+                    if TORCH_AVAILABLE and torch.cuda.is_available() and i < torch.cuda.device_count():
                         try:
                             device = torch.device(f'cuda:{i}')
                             allocated_mb = round(torch.cuda.memory_allocated(device) / 1024 / 1024, 1)
@@ -565,9 +570,8 @@ class SystemMonitor:
                 completion_event['estimated_compression_ratio'] = round(compression_ratio, 2)
 
         # Add GPU memory snapshot at completion
-        if self.gpu_available:
+        if self.gpu_available and TORCH_AVAILABLE:
             try:
-                import torch
                 gpu_snapshot = {}
                 for i in range(self.gpu_count):
                     if torch.cuda.is_available() and i < torch.cuda.device_count():

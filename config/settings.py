@@ -1,10 +1,11 @@
 """Application settings using Pydantic."""
 import os
+import json
 from pathlib import Path
-from typing import List, Literal
+from typing import List, Literal, Union
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 import yaml
 
@@ -38,6 +39,11 @@ class Settings(BaseSettings):
         default=300.0,
         description="Container inference timeout in seconds"
     )
+    enable_container_orchestration: bool = Field(
+        default=True,
+        description="Enable container lifecycle orchestration (start/stop between jobs). "
+                    "Disable for multi-GPU batch processing to keep containers running."
+    )
     
     # API Configuration
     api_host: str = Field(default="0.0.0.0", description="API server host")
@@ -45,10 +51,22 @@ class Settings(BaseSettings):
     api_workers: int = Field(default=1, description="Number of API workers")
     max_upload_size_mb: int = Field(default=50, description="Max upload size in MB")
     enable_cors: bool = Field(default=True, description="Enable CORS")
-    cors_origins: List[str] = Field(
-        default=["http://localhost:3000", "http://localhost:3001", "http://localhost:3002"],
+    cors_origins: Union[List[str], str] = Field(
+        default=["http://localhost:3000", "http://localhost:3001", "http://localhost:3002", "http://172.22.180.9:3000"],
         description="Allowed CORS origins"
     )
+
+    @field_validator('cors_origins', mode='before')
+    @classmethod
+    def parse_cors_origins(cls, v):
+        """Parse CORS origins from JSON string if needed."""
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except json.JSONDecodeError:
+                # If not valid JSON, split by comma
+                return [origin.strip() for origin in v.split(',')]
+        return v
     
     # Processing Configuration
     max_batch_size: int = Field(default=10, description="Maximum batch size")
@@ -164,9 +182,8 @@ class Settings(BaseSettings):
         pass
 
 
-@lru_cache()
 def get_settings() -> Settings:
-    """Get cached settings instance."""
+    """Get settings instance."""
     settings = Settings()
     settings.setup_environment()
     return settings

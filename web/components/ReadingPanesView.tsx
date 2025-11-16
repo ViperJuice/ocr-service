@@ -28,6 +28,8 @@ export default function ReadingPanesView({
     error: streamError,
     deepseekLoading,
     qwenLoading,
+    ocrModel,
+    mergeModel,
     getFullOcrText,
     getFullMergeText,
   } = useStreamingResults(jobId, enableStreaming);
@@ -87,7 +89,10 @@ export default function ReadingPanesView({
       <div className="flex-1 flex flex-col border border-gray-700 rounded bg-gray-800 min-h-0">
         <div className="px-3 py-2 border-b border-gray-700 bg-gray-900 font-medium text-sm flex items-center justify-between text-gray-200">
           <div className="flex items-center gap-2">
-            <span>DeepSeek-OCR Output (Stage 1)</span>
+            <span>
+              DeepSeek-OCR Output (Stage 1)
+              {ocrModel && <span className="text-xs text-gray-400 font-normal ml-2">({ocrModel})</span>}
+            </span>
             {deepseekLoading.isLoading && (
               <div className="flex items-center gap-2 text-xs text-blue-400">
                 <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -125,7 +130,10 @@ export default function ReadingPanesView({
       <div className="flex-1 flex flex-col border border-gray-700 rounded bg-gray-800 min-h-0">
         <div className="px-3 py-2 border-b border-gray-700 bg-gray-900 font-medium text-sm flex items-center justify-between text-gray-200">
           <div className="flex items-center gap-2">
-            <span>Merged Output (Stage 2 - Qwen3-VL)</span>
+            <span>
+              Merged Output (Stage 2 - Qwen3-VL)
+              {mergeModel && <span className="text-xs text-gray-400 font-normal ml-2">({mergeModel})</span>}
+            </span>
             {qwenLoading.isLoading && (
               <div className="flex items-center gap-2 text-xs text-blue-400">
                 <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">

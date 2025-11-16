@@ -145,7 +145,7 @@ async def submit_job(
     # Create job
     processing_opts = request.processing_options.model_dump() if request.processing_options else {}
 
-    job = job_manager.create_job(
+    job = await job_manager.create_job(
         file_id=request.file_id,
         filename=file_metadata.filename,
         model=model,

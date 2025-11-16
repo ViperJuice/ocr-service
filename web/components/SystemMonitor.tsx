@@ -45,7 +45,7 @@ export function SystemMonitor({
           history.reduce((sum, m) => sum + (m.cpu_percent ?? 0), 0) / history.length
         ).toFixed(1),
         avg_ram: (
-          history.reduce((sum, m) => sum + (m.ram_percent ?? 0), 0) / history.length
+          history.reduce((sum, m) => sum + (m.memory_percent ?? 0), 0) / history.length
         ).toFixed(1),
       },
     };
@@ -180,14 +180,11 @@ export function SystemMonitor({
             <MemoryStick className="w-4 h-4 text-green-400" />
             <span className="text-sm font-medium">RAM</span>
           </div>
-          <div className="text-2xl font-bold">{current.ram_percent?.toFixed(1) ?? "--"}%</div>
-          <div className="text-xs text-gray-400 mt-1">
-            {current.ram_used_gb?.toFixed(1) ?? "--"} / {current.ram_total_gb?.toFixed(1) ?? "--"} GB
-          </div>
+          <div className="text-2xl font-bold">{current.memory_percent?.toFixed(1) ?? "--"}%</div>
           <div className="w-full bg-gray-700 rounded-full h-1.5 mt-2">
             <div
               className="h-full bg-green-500 transition-all duration-300"
-              style={{ width: `${current.ram_percent ?? 0}%` }}
+              style={{ width: `${current.memory_percent ?? 0}%` }}
             />
           </div>
         </div>

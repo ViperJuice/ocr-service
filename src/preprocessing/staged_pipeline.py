@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import time
 import logging
 import asyncio
+from PIL import Image
 
 from .pdf_handler import PDFHandler
 from .checkpoint_manager import CheckpointManager
@@ -52,6 +53,42 @@ def run_async_in_thread(coro, event_loop=None):
             asyncio.set_event_loop(None)
 
 
+def resize_image_for_merge(image: Image.Image, max_dimension: int = 1024) -> Image.Image:
+    """
+    Resize image if it exceeds max_dimension to prevent CUDA OOM in Qwen merge model.
+
+    Args:
+        image: PIL Image to potentially resize
+        max_dimension: Maximum width or height (default: 1024px)
+
+    Returns:
+        Resized image if original was too large, otherwise original image
+
+    Note:
+        Qwen3-VL has limited GPU memory. Large images (2481x3508 from legal PDFs at 300 DPI)
+        cause OOM during attention calculation. Resizing to ~1024px significantly reduces
+        memory usage while preserving enough detail for text merging.
+    """
+    width, height = image.size
+    max_current = max(width, height)
+
+    if max_current <= max_dimension:
+        logger.debug(f"Image size {width}x{height} within limit ({max_dimension}px), no resize needed")
+        return image
+
+    # Calculate resize ratio to fit within max_dimension
+    ratio = max_dimension / max_current
+    new_width = int(width * ratio)
+    new_height = int(height * ratio)
+
+    logger.info(f"Resizing image from {width}x{height} to {new_width}x{new_height} "
+                f"(max_dimension={max_dimension}) to prevent Qwen OOM")
+
+    # Use LANCZOS for high-quality downsampling
+    resized = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+    return resized
+
+
 @dataclass
 class StageResult:
     """Result from a pipeline stage."""
@@ -81,6 +118,7 @@ class StagedPipelineProcessor:
         model_manager,
         pdf_handler: PDFHandler,
         baml_ocr_service: Optional[Any] = None,
+        pipeline_coordinator: Optional[Any] = None,
         verbose: bool = False,
         enable_memory_profiling: bool = False,
         enable_system_monitoring: bool = True,
@@ -98,6 +136,7 @@ class StagedPipelineProcessor:
             model_manager: ModelManager instance
             pdf_handler: PDFHandler instance
             baml_ocr_service: Optional BAMLOCRService for type-safe operations
+            pipeline_coordinator: Optional PipelineCoordinator for container orchestration
             verbose: Print progress messages
             enable_memory_profiling: Enable memory profiling
             enable_system_monitoring: Enable system resource monitoring
@@ -111,6 +150,7 @@ class StagedPipelineProcessor:
         self.model_manager = model_manager
         self.pdf_handler = pdf_handler
         self.baml_ocr_service = baml_ocr_service
+        self.pipeline_coordinator = pipeline_coordinator
         self.verbose = verbose
         self.enable_memory_profiling = enable_memory_profiling
         self.enable_system_monitoring = enable_system_monitoring
@@ -243,6 +283,19 @@ class StagedPipelineProcessor:
         overall_start = time.time()
 
         try:
+            # Container orchestration: Start pipeline (start DeepSeek container)
+            if self.pipeline_coordinator and self._event_loop:
+                from .pipeline_coordinator import StageTransitionEvent, PipelineStage
+                event = StageTransitionEvent(
+                    from_stage=None,
+                    to_stage=PipelineStage.INIT,
+                    timestamp=time.time()
+                )
+                run_async_in_thread(
+                    self.pipeline_coordinator.on_pipeline_start(event),
+                    self._event_loop
+                )
+
             # Stage 1: OCR
             if current_stage in ["ocr", None]:
                 if self.verbose:
@@ -264,6 +317,19 @@ class StagedPipelineProcessor:
                 # Emit stage complete
                 if self.result_emitter and self.job_id:
                     self.result_emitter.emit_stage_complete(self.job_id, "ocr")
+
+                # Container orchestration: Transition OCR→Merge (stop DeepSeek, start Qwen)
+                if self.pipeline_coordinator and self._event_loop:
+                    from .pipeline_coordinator import StageTransitionEvent, PipelineStage
+                    event = StageTransitionEvent(
+                        from_stage=PipelineStage.OCR,
+                        to_stage=PipelineStage.MERGE,
+                        timestamp=time.time()
+                    )
+                    run_async_in_thread(
+                        self.pipeline_coordinator.on_ocr_complete(event),
+                        self._event_loop
+                    )
 
             # Stage 2: Merge
             if self.verbose:
@@ -299,6 +365,19 @@ class StagedPipelineProcessor:
             if self.result_emitter and self.job_id:
                 self.result_emitter.emit_job_complete(self.job_id)
 
+            # Container orchestration: Pipeline complete (stop Qwen container)
+            if self.pipeline_coordinator and self._event_loop:
+                from .pipeline_coordinator import StageTransitionEvent, PipelineStage
+                event = StageTransitionEvent(
+                    from_stage=PipelineStage.MERGE,
+                    to_stage=PipelineStage.COMPLETE,
+                    timestamp=time.time()
+                )
+                run_async_in_thread(
+                    self.pipeline_coordinator.on_pipeline_complete(event),
+                    self._event_loop
+                )
+
             total_time = time.time() - overall_start
 
             if self.verbose:
@@ -320,6 +399,23 @@ class StagedPipelineProcessor:
                 'stages': results,
                 'output_path': output_path
             }
+
+        except Exception as pipeline_error:
+            # Container orchestration: Handle pipeline error (emergency cleanup)
+            if self.pipeline_coordinator and self._event_loop:
+                from .pipeline_coordinator import PipelineStage
+                try:
+                    # Determine current stage for error context
+                    error_stage = PipelineStage.MERGE if current_stage == "merge" else PipelineStage.OCR
+                    run_async_in_thread(
+                        self.pipeline_coordinator.on_error(pipeline_error, error_stage),
+                        self._event_loop
+                    )
+                except Exception as cleanup_error:
+                    logger.warning(f"Error during emergency container cleanup: {cleanup_error}")
+
+            # Re-raise the original error
+            raise
 
         finally:
             # Cleanup (always attempt, even on error)
@@ -408,6 +504,15 @@ class StagedPipelineProcessor:
             # Run OCR with container
             page_start = time.time()
 
+            # Emit inference start event and system message for UI
+            if self.result_emitter:
+                self.result_emitter.emit_inference_start(self.job_id, idx, "ocr")
+                self.result_emitter.emit_system_message(
+                    self.job_id,
+                    f"Starting OCR inference for page {idx}...",
+                    {"page": idx, "stage": "ocr"}
+                )
+
             # Use BAML service if available (type-safe operations)
             if self.baml_ocr_service:
                 ocr_model_result = run_async_in_thread(
@@ -432,6 +537,15 @@ class StagedPipelineProcessor:
             ocr_text = ocr_model_result.text or ""
             page_time = time.time() - page_start
 
+            # Emit inference complete event and system message for UI
+            if self.result_emitter:
+                self.result_emitter.emit_inference_complete(self.job_id, idx, "ocr", page_time)
+                self.result_emitter.emit_system_message(
+                    self.job_id,
+                    f"Completed OCR for page {idx} in {page_time:.2f}s",
+                    {"page": idx, "stage": "ocr", "duration": page_time}
+                )
+
             # Save to intermediate cache
             ocr_result = OCRPageResult(
                 page_num=idx,
@@ -448,7 +562,9 @@ class StagedPipelineProcessor:
 
             # Emit OCR result to SSE clients
             if self.result_emitter and self.job_id:
-                self.result_emitter.emit_ocr_page(self.job_id, page_num, ocr_text)
+                # Extract actual model from OCR result metadata
+                actual_model = ocr_model_result.metadata.get("actual_model", stage_config["model_name"])
+                self.result_emitter.emit_ocr_page(self.job_id, page_num, ocr_text, model=actual_model)
 
             # Save checkpoint
             stage_metadata = {
@@ -602,33 +718,90 @@ Provide the most accurate merged version by combining both sources, fixing any O
                     ocr_text=ocr_result.ocr_text
                 )
 
-            # Call merge model
+            # Resize image before merge to prevent CUDA OOM in Qwen3-VL
+            # Large legal-size PDFs (2481x3508 @ 300 DPI) exceed Qwen's GPU memory
+            merge_image = resize_image_for_merge(image, max_dimension=1024)
+
+            # Emit inference start event and system message for UI
+            page_start = time.time()
+            if self.result_emitter:
+                self.result_emitter.emit_inference_start(self.job_id, idx, "merge")
+                self.result_emitter.emit_system_message(
+                    self.job_id,
+                    f"Starting merge inference for page {idx}...",
+                    {"page": idx, "stage": "merge"}
+                )
+
+            # Call merge model with OOM retry logic
             # Use BAML service if available (type-safe operations with intelligent merging)
-            if self.baml_ocr_service:
-                merge_model_result = run_async_in_thread(
-                    self.baml_ocr_service.merge_texts(
-                        image=image,
-                        embedded_text=embedded_text or "",
-                        ocr_text=ocr_result.ocr_text,
-                        custom_prompt=self.custom_prompts.get("merge") if self.custom_prompts else None
-                    ),
-                    event_loop=self._event_loop
-                )
-            else:
-                # Fallback to direct container call
-                logger.warning("BAML service not available for merge, using direct container call")
-                merge_model_result = run_async_in_thread(
-                    self.model_manager.infer_with_container(
-                        model_name=stage_config["model_name"],
-                        image=image,
-                        prompt=merge_prompt,
-                        prompt_type="merge"
-                    ),
-                    event_loop=self._event_loop
-                )
+            merge_model_result = None
+            max_retries = 3
+            resolution_steps = [1024, 768, 512]  # Progressive reduction
+
+            for attempt in range(max_retries):
+                try:
+                    # Adjust resolution for retry attempts
+                    current_max_dim = resolution_steps[min(attempt, len(resolution_steps) - 1)]
+                    if attempt > 0:
+                        logger.warning(f"OOM retry attempt {attempt + 1}/{max_retries}, reducing resolution to {current_max_dim}px")
+                        merge_image = resize_image_for_merge(image, max_dimension=current_max_dim)
+
+                    if self.baml_ocr_service:
+                        merge_model_result = run_async_in_thread(
+                            self.baml_ocr_service.merge_texts(
+                                image=merge_image,  # Use resized image
+                                embedded_text=embedded_text or "",
+                                ocr_text=ocr_result.ocr_text,
+                                custom_prompt=self.custom_prompts.get("merge") if self.custom_prompts else None
+                            ),
+                            event_loop=self._event_loop
+                        )
+                    else:
+                        # Fallback to direct container call
+                        if attempt == 0:
+                            logger.warning("BAML service not available for merge, using direct container call")
+                        merge_model_result = run_async_in_thread(
+                            self.model_manager.infer_with_container(
+                                model_name=stage_config["model_name"],
+                                image=merge_image,  # Use resized image
+                                prompt=merge_prompt,
+                                prompt_type="merge",
+                                auto_unload=True  # Free GPU memory after inference
+                            ),
+                            event_loop=self._event_loop
+                        )
+
+                    # Success - break out of retry loop
+                    if attempt > 0:
+                        logger.info(f"Merge succeeded on retry attempt {attempt + 1} with resolution {current_max_dim}px")
+                    break
+
+                except Exception as e:
+                    error_msg = str(e).lower()
+                    is_oom_error = "out of memory" in error_msg or "cuda" in error_msg or "oom" in error_msg
+
+                    if is_oom_error and attempt < max_retries - 1:
+                        logger.warning(f"CUDA OOM detected on attempt {attempt + 1}, retrying with lower resolution...")
+                        continue
+                    else:
+                        # Not OOM or final attempt failed - re-raise
+                        logger.error(f"Merge failed on attempt {attempt + 1}: {e}")
+                        raise
+
+            if merge_model_result is None:
+                raise RuntimeError("Merge model inference failed after all retry attempts")
 
             merged_text = merge_model_result.text or ""
             page_time = time.time() - page_start
+
+            # Emit inference complete event and system message for UI
+            if self.result_emitter:
+                self.result_emitter.emit_inference_complete(self.job_id, idx, "merge", page_time)
+                self.result_emitter.emit_system_message(
+                    self.job_id,
+                    f"Completed merge for page {idx} in {page_time:.2f}s",
+                    {"page": idx, "stage": "merge", "duration": page_time}
+                )
 
             # Write to output file (append mode)
             self._write_page_result(
@@ -642,12 +815,15 @@ Provide the most accurate merged version by combining both sources, fixing any O
 
             # Emit merged result to SSE clients with metadata
             if self.result_emitter and self.job_id:
+                # Extract actual model from merge result metadata
+                actual_model = merge_model_result.metadata.get("actual_model", stage_config["model_name"])
                 self.result_emitter.emit_merge_page(
                     job_id=self.job_id,
                     page_num=page_num,
                     text=merged_text,
                     processing_time=page_time,
-                    total_pages=total_pages
+                    total_pages=total_pages,
+                    model=actual_model
                 )
 
             # Save checkpoint

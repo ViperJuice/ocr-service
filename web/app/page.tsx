@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import dynamic from "next/dynamic";
 import { MessageList } from "@/components/MessageList";
 import { ChatInput } from "@/components/ChatInput";
@@ -74,6 +74,27 @@ export default function Home() {
     };
     setMessages((prev) => [...prev, message]);
   }, []);
+
+  // Subscribe to system messages (container orchestration status)
+  useEffect(() => {
+    if (!currentJob?.job_id) return;
+
+    const url = `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/api/v1/process/jobs/${currentJob.job_id}/stream-results`;
+    const eventSource = new EventSource(url);
+
+    eventSource.addEventListener("system_message", (event: MessageEvent) => {
+      try {
+        const data = JSON.parse(event.data);
+        addMessage("system", data.message, data.metadata);
+      } catch (err) {
+        console.error("Failed to parse system_message event:", err);
+      }
+    });
+
+    return () => {
+      eventSource.close();
+    };
+  }, [currentJob?.job_id, addMessage]);
 
   // Handle files dropped into chat
   const handleFilesDropped = useCallback(

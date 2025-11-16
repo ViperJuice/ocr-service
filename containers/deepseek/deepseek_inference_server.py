@@ -56,6 +56,7 @@ class InferenceResponse(BaseModel):
     success: bool
     error: Optional[str] = None
     model_unloaded: bool = False  # Indicates if model was unloaded after inference
+    model: str = "deepseek-ai/DeepSeek-OCR"  # Model identifier
 
 
 class BatchInferenceItem(BaseModel):

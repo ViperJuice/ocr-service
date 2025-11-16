@@ -4,6 +4,7 @@ from uuid import UUID
 from datetime import datetime
 from supabase import Client
 from .base_repository import BaseRepository
+import asyncio
 import logging
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,7 @@ class JobRepository(BaseRepository):
 
     async def create_job(
         self,
+        job_id: UUID,
         user_id: UUID,
         file_id: UUID,
         filename: str,
@@ -39,6 +41,7 @@ class JobRepository(BaseRepository):
         """Create a new job.
 
         Args:
+            job_id: Job ID (must match in-memory job ID)
             user_id: User ID
             file_id: File ID
             filename: Original filename
@@ -53,6 +56,7 @@ class JobRepository(BaseRepository):
             Created job record
         """
         data = {
+            "job_id": str(job_id),
             "user_id": str(user_id),
             "file_id": str(file_id),
             "filename": filename,
@@ -210,10 +214,13 @@ class JobRepository(BaseRepository):
             data["merge_processing_time"] = merge_processing_time
 
         # Upsert: update if exists, insert if not
-        result = (
-            self.client.table("page_results")
-            .upsert(data, on_conflict="job_id,page_num")
-            .execute()
+        # Run blocking Supabase call in thread pool to avoid blocking event loop
+        result = await asyncio.to_thread(
+            lambda: (
+                self.client.table("page_results")
+                .upsert(data, on_conflict="job_id,page_num")
+                .execute()
+            )
         )
         return result.data[0] if result.data else None
 
@@ -226,12 +233,15 @@ class JobRepository(BaseRepository):
         Returns:
             List of page result records ordered by page_num
         """
-        result = (
-            self.client.table("page_results")
-            .select("*")
-            .eq("job_id", str(job_id))
-            .order("page_num")
-            .execute()
+        # Run blocking Supabase call in thread pool to avoid blocking event loop
+        result = await asyncio.to_thread(
+            lambda: (
+                self.client.table("page_results")
+                .select("*")
+                .eq("job_id", str(job_id))
+                .order("page_num")
+                .execute()
+            )
         )
         return result.data
 
@@ -254,14 +264,24 @@ class JobRepository(BaseRepository):
 
         Returns:
             Created event record
+
+        Raises:
+            Exception: If event creation fails (database error, FK violation, etc.)
         """
         data = {
             "job_id": str(job_id),
             "event_type": event_type,
             "event_data": event_data,
         }
-        result = self.client.table("job_events").insert(data).execute()
-        return result.data[0] if result.data else None
+        # Run blocking Supabase call in thread pool to avoid blocking event loop
+        result = await asyncio.to_thread(
+            lambda: self.client.table("job_events").insert(data).execute()
+        )
+
+        if not result.data:
+            raise RuntimeError(f"Job event creation returned no data for job {job_id}, event {event_type}")
+
+        return result.data[0]
 
     async def get_job_events(
         self, job_id: UUID, limit: int = 100
@@ -275,12 +295,15 @@ class JobRepository(BaseRepository):
         Returns:
             List of event records ordered by created_at
         """
-        result = (
-            self.client.table("job_events")
-            .select("*")
-            .eq("job_id", str(job_id))
-            .order("created_at", desc=False)
-            .limit(limit)
-            .execute()
+        # Run blocking Supabase call in thread pool to avoid blocking event loop
+        result = await asyncio.to_thread(
+            lambda: (
+                self.client.table("job_events")
+                .select("*")
+                .eq("job_id", str(job_id))
+                .order("created_at", desc=False)
+                .limit(limit)
+                .execute()
+            )
         )
         return result.data

@@ -8,12 +8,46 @@ Provides connection pooling, health checks, and request routing.
 import asyncio
 import logging
 import json
+import time
+import psutil
 from typing import Dict, Any, Optional, List, AsyncIterator, Union
 from dataclasses import dataclass
 import httpx
 from enum import Enum
 
 logger = logging.getLogger(__name__)
+
+
+class ConnectionTelemetry:
+    """Track connection metrics and file descriptors"""
+
+    def __init__(self):
+        self.request_count = 0
+        self.error_count = 0
+        self.total_request_time = 0.0
+        self.active_requests = 0
+
+    def get_process_fd_count(self) -> int:
+        """Get current file descriptor count for this process"""
+        try:
+            process = psutil.Process()
+            return process.num_fds()  # Linux only
+        except (AttributeError, Exception):
+            return -1  # Not available on this platform
+
+    def log_metrics(self, model_type: str):
+        """Log current telemetry metrics"""
+        fd_count = self.get_process_fd_count()
+        avg_time = self.total_request_time / self.request_count if self.request_count > 0 else 0
+
+        logger.info(
+            f"[TELEMETRY] {model_type} - "
+            f"Requests: {self.request_count}, "
+            f"Errors: {self.error_count}, "
+            f"Active: {self.active_requests}, "
+            f"Avg time: {avg_time:.2f}s, "
+            f"FD count: {fd_count}"
+        )
 
 
 class ModelType(Enum):
@@ -57,6 +91,7 @@ class HTTPClientManager:
     def __init__(self):
         self.clients: Dict[ModelType, httpx.AsyncClient] = {}
         self.configs: Dict[ModelType, ContainerConfig] = {}
+        self.telemetry: Dict[ModelType, ConnectionTelemetry] = {}
         self._initialized = False
 
     async def initialize(
@@ -98,6 +133,7 @@ class HTTPClientManager:
                     max_keepalive_connections=5
                 )
             )
+            self.telemetry[model_type] = ConnectionTelemetry()
             logger.info(f"Created HTTP client for {model_type.value} at {config.base_url}")
 
         # Verify containers are healthy
@@ -334,7 +370,15 @@ class HTTPClientManager:
             **kwargs  # Include container-specific parameters
         }
 
-        logger.debug(f"Sending chat completion request to {model_type.value} (stream={stream})")
+        # Get telemetry for this model
+        telemetry = self.telemetry[model_type]
+        start_time = time.time()
+        telemetry.active_requests += 1
+
+        logger.debug(
+            f"Sending chat completion request to {model_type.value} (stream={stream}) "
+            f"[Active: {telemetry.active_requests}, Total: {telemetry.request_count}, FD: {telemetry.get_process_fd_count()}]"
+        )
 
         if stream:
             # Streaming response with SSE parsing
@@ -361,8 +405,28 @@ class HTTPClientManager:
                                     continue
 
                 except httpx.HTTPError as e:
+                    telemetry.error_count += 1
                     logger.error(f"HTTP error during streaming chat completion: {e}")
                     raise
+                except Exception as e:
+                    telemetry.error_count += 1
+                    logger.error(f"Unexpected error during streaming: {e}")
+                    raise
+                finally:
+                    # Always cleanup
+                    telemetry.active_requests -= 1
+                    telemetry.request_count += 1
+                    elapsed = time.time() - start_time
+                    telemetry.total_request_time += elapsed
+
+                    logger.debug(
+                        f"{model_type.value} stream completed in {elapsed:.2f}s "
+                        f"[Active: {telemetry.active_requests}, FD: {telemetry.get_process_fd_count()}]"
+                    )
+
+                    # Log full metrics every 10 requests
+                    if telemetry.request_count % 10 == 0:
+                        telemetry.log_metrics(model_type.value)
 
             return stream_chunks()
 
@@ -377,12 +441,81 @@ class HTTPClientManager:
                 response.raise_for_status()
                 result = response.json()
 
-                logger.debug(f"{model_type.value} chat completion successful")
+                # Update metrics on success
+                elapsed = time.time() - start_time
+                telemetry.request_count += 1
+                telemetry.total_request_time += elapsed
+
+                logger.debug(
+                    f"{model_type.value} chat completion successful in {elapsed:.2f}s "
+                    f"[Total: {telemetry.request_count}, FD: {telemetry.get_process_fd_count()}]"
+                )
+
+                # Log full metrics every 10 requests
+                if telemetry.request_count % 10 == 0:
+                    telemetry.log_metrics(model_type.value)
+
                 return result
 
             except httpx.HTTPError as e:
+                telemetry.error_count += 1
                 logger.error(f"HTTP error during {model_type.value} chat completion: {e}")
                 raise
+            except Exception as e:
+                telemetry.error_count += 1
+                logger.error(f"Unexpected error during {model_type.value} chat completion: {e}")
+                raise
+            finally:
+                # Always decrement active counter
+                telemetry.active_requests -= 1
+
+    async def unload_model(self, model_type: ModelType) -> Dict[str, Any]:
+        """
+        Explicitly unload model from GPU memory in container.
+
+        This provides manual control over model lifecycle for:
+        - Multi-GPU batch optimization (keep models on specific GPUs)
+        - Explicit cleanup after job completion
+        - Testing and debugging
+
+        Note: Models auto-unload by default if auto_unload=True in requests.
+
+        Args:
+            model_type: Which model to unload (DEEPSEEK_OCR or QWEN_VL)
+
+        Returns:
+            Response from unload endpoint with success status and memory stats
+
+        Raises:
+            httpx.HTTPError: If request fails
+        """
+        if not self._initialized:
+            raise RuntimeError("HTTPClientManager not initialized")
+
+        client = self.clients[model_type]
+        telemetry = self.telemetry[model_type]
+
+        logger.info(f"Unloading {model_type.value} model from GPU memory...")
+
+        try:
+            start_time = time.time()
+            response = await client.post("/unload", timeout=30.0)
+            response.raise_for_status()
+            result = response.json()
+
+            elapsed = time.time() - start_time
+            fd_count = telemetry.get_process_fd_count()
+
+            logger.info(
+                f"✓ {model_type.value} model unloaded in {elapsed:.2f}s "
+                f"[FD: {fd_count}]"
+            )
+
+            return result
+
+        except httpx.HTTPError as e:
+            logger.error(f"Failed to unload {model_type.value} model: {e}")
+            raise
 
     async def close(self):
         """Close all HTTP client connections"""

@@ -56,6 +56,7 @@ class InferenceResponse(BaseModel):
     success: bool
     error: Optional[str] = None
     model_unloaded: bool = False  # Indicates if model was unloaded after inference
+    model: str = "Qwen/Qwen3-VL-8B-Instruct"  # Model identifier
 
 
 class BatchInferenceItem(BaseModel):
@@ -483,8 +484,10 @@ async def infer(request: InferenceRequest):
 
         # Generate
         output_ids = model.generate(**inputs, max_new_tokens=request.max_new_tokens)
+        # Decode only the generated tokens (skip the input prompt)
+        generated_ids = output_ids[:, inputs.input_ids.shape[1]:]
         output_text = processor.batch_decode(
-            output_ids,
+            generated_ids,
             skip_special_tokens=True,
             clean_up_tokenization_spaces=False
         )[0]
@@ -575,8 +578,10 @@ async def batch_infer(request: BatchInferenceRequest):
 
                 # Generate
                 output_ids = model.generate(**inputs, max_new_tokens=item.max_new_tokens)
+                # Decode only the generated tokens (skip the input prompt)
+                generated_ids = output_ids[:, inputs.input_ids.shape[1]:]
                 output_text = processor.batch_decode(
-                    output_ids,
+                    generated_ids,
                     skip_special_tokens=True,
                     clean_up_tokenization_spaces=False
                 )[0]
@@ -793,8 +798,10 @@ async def chat_completions(request: ChatCompletionRequest):
                 temperature=request.temperature if request.temperature > 0 else None,
                 do_sample=request.temperature > 0
             )
+            # Decode only the generated tokens (skip the input prompt)
+            generated_ids = output_ids[:, inputs.input_ids.shape[1]:]
             output_text = processor.batch_decode(
-                output_ids,
+                generated_ids,
                 skip_special_tokens=True,
                 clean_up_tokenization_spaces=False
             )[0]

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiClient, ApiError } from "@/lib/api-client";
 import {
@@ -11,11 +11,32 @@ import {
   JobSubmitRequest,
   OutputFormat,
 } from "@/lib/types";
+import { useRealtimeJob } from "./useRealtimeJob";
 
 export function useOcrJob() {
   const [currentFile, setCurrentFile] = useState<FileMetadata | null>(null);
   const [currentJob, setCurrentJob] = useState<JobCreatedResponse | null>(null);
   const [jobResult, setJobResult] = useState<JobResult | null>(null);
+
+  // PHASE 3.5: Realtime subscription for dual-subscription pattern
+  const {
+    job: realtimeJob,
+    isConnected: isRealtimeConnected,
+    latency: realtimeLatency
+  } = useRealtimeJob(currentJob?.job_id ?? null);
+
+  // Log comparison between SSE and Realtime updates
+  useEffect(() => {
+    if (realtimeJob && currentJob) {
+      console.log('[PHASE 3.5] Dual-subscription comparison:', {
+        jobId: currentJob.job_id,
+        realtimeConnected: isRealtimeConnected,
+        realtimeStatus: realtimeJob.status,
+        realtimeProgress: realtimeJob.progress_pct,
+        realtimeLatency: realtimeLatency ? `${realtimeLatency}ms` : 'N/A',
+      });
+    }
+  }, [realtimeJob, currentJob, isRealtimeConnected, realtimeLatency]);
 
   // Upload file mutation
   const uploadMutation = useMutation({
@@ -106,6 +127,11 @@ export function useOcrJob() {
     isSubmitting: submitJobMutation.isPending,
     uploadError: uploadMutation.error,
     submitError: submitJobMutation.error,
+
+    // PHASE 3.5: Realtime state
+    realtimeJob,
+    isRealtimeConnected,
+    realtimeLatency,
   };
 }
 

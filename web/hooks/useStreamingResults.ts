@@ -17,6 +17,8 @@ interface StreamingResults {
   jobComplete: boolean;
   deepseekLoading: ModelLoadingState;
   qwenLoading: ModelLoadingState;
+  ocrModel: string | null;
+  mergeModel: string | null;
 }
 
 /**
@@ -43,6 +45,8 @@ export function useStreamingResults(jobId: string | null, enabled: boolean = tru
   const [error, setError] = useState<string | null>(null);
   const [deepseekLoading, setDeepseekLoading] = useState<ModelLoadingState>(initialLoadingState);
   const [qwenLoading, setQwenLoading] = useState<ModelLoadingState>(initialLoadingState);
+  const [ocrModel, setOcrModel] = useState<string | null>(null);
+  const [mergeModel, setMergeModel] = useState<string | null>(null);
 
   const eventSourceRef = useRef<EventSource | null>(null);
 
@@ -60,6 +64,8 @@ export function useStreamingResults(jobId: string | null, enabled: boolean = tru
     setError(null);
     setDeepseekLoading(initialLoadingState);
     setQwenLoading(initialLoadingState);
+    setOcrModel(null);
+    setMergeModel(null);
 
     // Connect to SSE stream
     const url = `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/api/v1/process/jobs/${jobId}/stream-results`;
@@ -74,6 +80,10 @@ export function useStreamingResults(jobId: string | null, enabled: boolean = tru
           next.set(data.page_num, data.text);
           return next;
         });
+        // Capture model information from first page
+        if (data.model && !ocrModel) {
+          setOcrModel(data.model);
+        }
       } catch (err) {
         console.error("Failed to parse ocr_page_complete event:", err);
       }
@@ -87,6 +97,10 @@ export function useStreamingResults(jobId: string | null, enabled: boolean = tru
           next.set(data.page_num, data.text);
           return next;
         });
+        // Capture model information from first page
+        if (data.model && !mergeModel) {
+          setMergeModel(data.model);
+        }
       } catch (err) {
         console.error("Failed to parse merge_page_complete event:", err);
       }
@@ -152,6 +166,37 @@ export function useStreamingResults(jobId: string | null, enabled: boolean = tru
       }
     });
 
+    eventSource.addEventListener("model_ready", (event: MessageEvent) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.stage === "ocr") {
+          setOcrModel(data.model);
+        } else if (data.stage === "merge") {
+          setMergeModel(data.model);
+        }
+      } catch (err) {
+        console.error("Failed to parse model_ready event:", err);
+      }
+    });
+
+    eventSource.addEventListener("inference_start", (event: MessageEvent) => {
+      try {
+        const data = JSON.parse(event.data);
+        console.log(`Inference started for ${data.stage} page ${data.page_num}`);
+      } catch (err) {
+        console.error("Failed to parse inference_start event:", err);
+      }
+    });
+
+    eventSource.addEventListener("inference_complete", (event: MessageEvent) => {
+      try {
+        const data = JSON.parse(event.data);
+        console.log(`Inference completed for ${data.stage} page ${data.page_num} in ${data.duration_seconds.toFixed(2)}s`);
+      } catch (err) {
+        console.error("Failed to parse inference_complete event:", err);
+      }
+    });
+
     eventSource.addEventListener("job_complete", () => {
       setJobComplete(true);
       // Close connection when job is complete
@@ -200,6 +245,8 @@ export function useStreamingResults(jobId: string | null, enabled: boolean = tru
     error,
     deepseekLoading,
     qwenLoading,
+    ocrModel,
+    mergeModel,
     getFullOcrText,
     getFullMergeText,
   };

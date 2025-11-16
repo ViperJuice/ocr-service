@@ -4,8 +4,14 @@ from pathlib import Path
 from dataclasses import dataclass
 import time
 import gc
-import torch
 import logging
+
+# Make torch optional - not needed when using HTTP clients for containerized models
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
 
 from .pdf_handler import PDFHandler
 from .spatial_data import PageStructure
@@ -269,9 +275,9 @@ class HybridPDFProcessor:
                 if self.enable_memory_optimization:
                     # Force Python garbage collection
                     gc.collect()
-                
+
                     # CUDA cleanup (if available)
-                    if torch.cuda.is_available():
+                    if TORCH_AVAILABLE and torch.cuda.is_available():
                         # Empty cache on all GPUs
                         torch.cuda.empty_cache()
 
@@ -320,7 +326,7 @@ class HybridPDFProcessor:
 
                             # Force cleanup
                             gc.collect()
-                            if torch.cuda.is_available():
+                            if TORCH_AVAILABLE and torch.cuda.is_available():
                                 torch.cuda.empty_cache()
                                 torch.cuda.synchronize()
 
@@ -534,7 +540,7 @@ class HybridPDFProcessor:
         ocr_text = ocr_result.text or ""
 
         # Log actual memory usage for validation
-        if self.verbose and torch.cuda.is_available():
+        if self.verbose and TORCH_AVAILABLE and torch.cuda.is_available():
             try:
                 device_id = 0
                 if hasattr(ocr_model, 'model') and hasattr(ocr_model.model, 'device'):
@@ -608,7 +614,7 @@ Match this formatting style and structure."""
             merge_model.clear_cache()
         
         # Log actual memory usage for validation
-        if self.verbose and torch.cuda.is_available():
+        if self.verbose and TORCH_AVAILABLE and torch.cuda.is_available():
             try:
                 device_id = 0
                 if hasattr(merge_model, 'model') and hasattr(merge_model.model, 'device'):
@@ -829,7 +835,8 @@ Match this formatting style and structure."""
                 
                 # Clear cache before attempt
                 if self.enable_memory_optimization:
-                    torch.cuda.empty_cache()
+                    if TORCH_AVAILABLE and torch.cuda.is_available():
+                        torch.cuda.empty_cache()
                     gc.collect()
                 
                 # Choose processing method

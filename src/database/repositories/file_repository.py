@@ -4,6 +4,7 @@ from uuid import UUID
 from datetime import datetime, timedelta
 from supabase import Client
 from .base_repository import BaseRepository
+import asyncio
 import logging
 
 logger = logging.getLogger(__name__)
@@ -92,11 +93,14 @@ class FileRepository(BaseRepository):
         Returns:
             File record or None
         """
-        result = (
-            self.client.table(self.table_name)
-            .select("*")
-            .eq("storage_path", storage_path)
-            .execute()
+        # Run blocking Supabase call in thread pool to avoid blocking event loop
+        result = await asyncio.to_thread(
+            lambda: (
+                self.client.table(self.table_name)
+                .select("*")
+                .eq("storage_path", storage_path)
+                .execute()
+            )
         )
         return result.data[0] if result.data else None
 
@@ -122,13 +126,16 @@ class FileRepository(BaseRepository):
         Returns:
             List of expired file records
         """
-        result = (
-            self.client.table(self.table_name)
-            .select("*")
-            .lt("expires_at", datetime.now().isoformat())
-            .is_("deleted_at", "null")
-            .limit(limit)
-            .execute()
+        # Run blocking Supabase call in thread pool to avoid blocking event loop
+        result = await asyncio.to_thread(
+            lambda: (
+                self.client.table(self.table_name)
+                .select("*")
+                .lt("expires_at", datetime.now().isoformat())
+                .is_("deleted_at", "null")
+                .limit(limit)
+                .execute()
+            )
         )
         return result.data
 
@@ -144,13 +151,16 @@ class FileRepository(BaseRepository):
         Returns:
             List of file records
         """
-        result = (
-            self.client.table(self.table_name)
-            .select("*")
-            .eq("user_id", str(user_id))
-            .is_("deleted_at", "null")
-            .order("uploaded_at", desc=True)
-            .limit(limit)
-            .execute()
+        # Run blocking Supabase call in thread pool to avoid blocking event loop
+        result = await asyncio.to_thread(
+            lambda: (
+                self.client.table(self.table_name)
+                .select("*")
+                .eq("user_id", str(user_id))
+                .is_("deleted_at", "null")
+                .order("uploaded_at", desc=True)
+                .limit(limit)
+                .execute()
+            )
         )
         return result.data

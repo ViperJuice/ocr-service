@@ -2,6 +2,7 @@
 from typing import Any, Dict, List, Optional
 from supabase import Client
 from postgrest import APIError
+import asyncio
 import logging
 
 logger = logging.getLogger(__name__)
@@ -33,10 +34,18 @@ class BaseRepository:
             APIError: If database operation fails
         """
         try:
-            result = self.client.table(self.table_name).insert(data).execute()
+            # Run blocking Supabase call in thread pool to avoid blocking event loop
+            logger.info(f"[DB] Starting create for table {self.table_name}")
+            result = await asyncio.to_thread(
+                lambda: self.client.table(self.table_name).insert(data).execute()
+            )
+            logger.info(f"[DB] Completed create for table {self.table_name}, result: {result.data}")
             return result.data[0] if result.data else None
         except APIError as e:
             logger.error(f"Error creating record in {self.table_name}: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error creating record in {self.table_name}: {type(e).__name__}: {e}")
             raise
 
     async def get_by_id(self, id_column: str, id_value: str) -> Optional[Dict[str, Any]]:
@@ -50,11 +59,14 @@ class BaseRepository:
             Record dict or None if not found
         """
         try:
-            result = (
-                self.client.table(self.table_name)
-                .select("*")
-                .eq(id_column, id_value)
-                .execute()
+            # Run blocking Supabase call in thread pool to avoid blocking event loop
+            result = await asyncio.to_thread(
+                lambda: (
+                    self.client.table(self.table_name)
+                    .select("*")
+                    .eq(id_column, id_value)
+                    .execute()
+                )
             )
             return result.data[0] if result.data else None
         except APIError as e:
@@ -75,11 +87,14 @@ class BaseRepository:
             Updated record or None
         """
         try:
-            result = (
-                self.client.table(self.table_name)
-                .update(data)
-                .eq(id_column, id_value)
-                .execute()
+            # Run blocking Supabase call in thread pool to avoid blocking event loop
+            result = await asyncio.to_thread(
+                lambda: (
+                    self.client.table(self.table_name)
+                    .update(data)
+                    .eq(id_column, id_value)
+                    .execute()
+                )
             )
             return result.data[0] if result.data else None
         except APIError as e:
@@ -97,11 +112,14 @@ class BaseRepository:
             True if deleted, False otherwise
         """
         try:
-            result = (
-                self.client.table(self.table_name)
-                .delete()
-                .eq(id_column, id_value)
-                .execute()
+            # Run blocking Supabase call in thread pool to avoid blocking event loop
+            result = await asyncio.to_thread(
+                lambda: (
+                    self.client.table(self.table_name)
+                    .delete()
+                    .eq(id_column, id_value)
+                    .execute()
+                )
             )
             return len(result.data) > 0
         except APIError as e:
@@ -121,13 +139,15 @@ class BaseRepository:
             List of records
         """
         try:
-            query = self.client.table(self.table_name).select("*")
+            # Run blocking Supabase call in thread pool to avoid blocking event loop
+            def _execute_query():
+                query = self.client.table(self.table_name).select("*")
+                if filters:
+                    for column, value in filters.items():
+                        query = query.eq(column, value)
+                return query.limit(limit).execute()
 
-            if filters:
-                for column, value in filters.items():
-                    query = query.eq(column, value)
-
-            result = query.limit(limit).execute()
+            result = await asyncio.to_thread(_execute_query)
             return result.data
         except APIError as e:
             logger.error(f"Error listing records from {self.table_name}: {e}")

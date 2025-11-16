@@ -111,7 +111,7 @@ export function useSystemMetrics(
 
     // Create SSE connection
     try {
-      const eventSource = apiClient.createMonitoringStream();
+      const eventSource = apiClient.createSystemMonitoringStream();
       eventSourceRef.current = eventSource;
 
       eventSource.onopen = () => {
@@ -124,15 +124,15 @@ export function useSystemMetrics(
           const rawData = JSON.parse(event.data);
 
           // Transform backend format to SystemMetrics format
-          // Backend sends: { timestamp, system: {cpu_percent, ram_percent}, gpus: [...], active_jobs, queued_jobs }
+          // Backend sends: { timestamp, cpu_percent, ram_percent, gpus: [...], queue: {...} }
           // We need: { timestamp, cpu_percent, memory_percent, gpus, active_jobs, queued_jobs }
           const metrics: SystemMetrics = {
             timestamp: rawData.timestamp,
-            cpu_percent: rawData.system?.cpu_percent ?? 0,
-            memory_percent: rawData.system?.ram_percent ?? 0,
+            cpu_percent: rawData.cpu_percent ?? 0,
+            memory_percent: rawData.ram_percent ?? 0,
             gpus: rawData.gpus,
-            active_jobs: rawData.active_jobs ?? 0,
-            queued_jobs: rawData.queued_jobs ?? 0,
+            active_jobs: rawData.queue?.processing ?? 0,
+            queued_jobs: rawData.queue?.queued ?? 0,
           };
 
           // Update current metrics

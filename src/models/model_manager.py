@@ -60,6 +60,7 @@ class ModelManager:
         prompt: Optional[str] = None,
         messages: Optional[list] = None,
         prompt_type: str = "ocr",
+        auto_unload: bool = True,
         **kwargs
     ) -> OCRResult:
         """
@@ -71,6 +72,7 @@ class ModelManager:
             prompt: Text prompt (for DeepSeek)
             messages: Chat messages (for Qwen)
             prompt_type: Prompt type for result metadata
+            auto_unload: Whether to unload model after inference (default: True)
             **kwargs: Additional model-specific parameters
 
         Returns:
@@ -115,7 +117,8 @@ class ModelManager:
                 "prompt": prompt,
                 "base_size": config.get("base_size", 1024),
                 "image_size": config.get("image_size", 640),
-                "crop_mode": config.get("crop_mode", True)
+                "crop_mode": config.get("crop_mode", True),
+                "auto_unload": auto_unload
             }
 
             # Call container with fresh client (thread-safe)
@@ -147,7 +150,8 @@ class ModelManager:
             # Build request
             request_data = {
                 "image_base64": image_b64,
-                "messages": messages
+                "messages": messages,
+                "auto_unload": auto_unload
             }
 
             # Call container with fresh client (thread-safe)
@@ -175,7 +179,8 @@ class ModelManager:
                 "container_mode": True,
                 "image_size": image.size,
                 "success": result.get("success", False),
-                "error": result.get("error")
+                "error": result.get("error"),
+                "actual_model": result.get("model", model_name)  # Actual model variant used
             }
         )
 

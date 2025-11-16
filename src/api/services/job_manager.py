@@ -57,7 +57,8 @@ class JobManager:
         max_concurrent_jobs: int = 2,
         result_emitter=None,
         event_loop=None,
-        job_repository=None
+        job_repository=None,
+        container_orchestrator=None
     ):
         """
         Initialize job manager.
@@ -69,6 +70,7 @@ class JobManager:
             result_emitter: Optional ResultEmitter for streaming results
             event_loop: Optional event loop for thread-safe async operations
             job_repository: Optional JobRepository for database writes (Phase 2)
+            container_orchestrator: Optional ContainerOrchestrator for lifecycle management
         """
         self.processing_directory = Path(processing_directory)
         self.output_directory = Path(output_directory)
@@ -76,6 +78,7 @@ class JobManager:
         self.result_emitter = result_emitter
         self._event_loop = event_loop
         self.job_repository = job_repository
+        self.container_orchestrator = container_orchestrator
 
         self.processing_directory.mkdir(parents=True, exist_ok=True)
         self.output_directory.mkdir(parents=True, exist_ok=True)
@@ -101,7 +104,7 @@ class JobManager:
             f"output={output_directory}, max_concurrent={max_concurrent_jobs}"
         )
 
-    def create_job(
+    async def create_job(
         self,
         file_id: str,
         filename: str,
@@ -149,45 +152,46 @@ class JobManager:
         logger.info(f"Job created: {job_id} for file {file_id}")
 
         # Write to database (Phase 2: dual-write)
-        if self.job_repository and self._event_loop:
+        if self.job_repository:
             try:
                 from uuid import UUID
 
                 # Get user_id from processing_options or use dev default
                 user_id_str = processing_options.get('user_id', 'a0000000-0000-0000-0000-000000000001')
 
-                future = asyncio.run_coroutine_threadsafe(
-                    self.job_repository.create_job(
-                        user_id=UUID(user_id_str),
-                        file_id=UUID(file_id),
-                        filename=filename,
-                        model=model,
-                        prompt_type=prompt_type,
-                        custom_prompts=custom_prompts,
-                        processing_options=processing_options,
-                        output_format=output_format,
-                        parent_batch_id=UUID(job.parent_batch_id) if job.parent_batch_id else None
-                    ),
-                    self._event_loop
+                # Directly await - no need for run_coroutine_threadsafe since we're in async context
+                logger.info(f"[DB WRITE] Attempting to write job {job_id} to database")
+                db_job = await self.job_repository.create_job(
+                    job_id=UUID(job_id),
+                    user_id=UUID(user_id_str),
+                    file_id=UUID(file_id),
+                    filename=filename,
+                    model=model,
+                    prompt_type=prompt_type,
+                    custom_prompts=custom_prompts,
+                    processing_options=processing_options,
+                    output_format=output_format,
+                    parent_batch_id=UUID(job.parent_batch_id) if job.parent_batch_id else None
                 )
+                logger.info(f"[DB WRITE] Job create_job returned: {db_job}")
 
-                db_job = future.result(timeout=5)
+                if not db_job:
+                    logger.error(f"Job {job_id} creation in database returned None - job not created")
+                    return job  # Return early, skip event creation
+
                 logger.info(f"Job {job_id} written to database")
 
-                # Log creation event
-                future_event = asyncio.run_coroutine_threadsafe(
-                    self.job_repository.create_job_event(
-                        job_id=UUID(job_id),
-                        event_type="job_created",
-                        event_data={
-                            "filename": filename,
-                            "model": model,
-                            "estimated_pages": estimated_pages
-                        }
-                    ),
-                    self._event_loop
-                )
-                future_event.result(timeout=5)
+                # Skip job_event creation during initial job creation to avoid FK timing issues
+                # Job events will be created when job status changes during processing
+                # await self.job_repository.create_job_event(
+                #     job_id=UUID(job_id),
+                #     event_type="job_created",
+                #     event_data={
+                #         "filename": filename,
+                #         "model": model,
+                #         "estimated_pages": estimated_pages
+                #     }
+                # )
 
             except Exception as e:
                 logger.error(f"Failed to write job {job_id} to database: {e}", exc_info=True)
@@ -238,9 +242,10 @@ class JobManager:
 
         # Update database (Phase 2: dual-write)
         if self.job_repository and self._event_loop:
-            try:
-                from uuid import UUID
+            from uuid import UUID
 
+            # Update job status to processing
+            try:
                 future = asyncio.run_coroutine_threadsafe(
                     self.job_repository.update_job_status(
                         job_id=UUID(job_id),
@@ -250,8 +255,12 @@ class JobManager:
                     self._event_loop
                 )
                 future.result(timeout=5)
+                logger.info(f"Job {job_id} status updated to 'processing' in database")
+            except Exception as e:
+                logger.error(f"Failed to update job {job_id} status to 'processing': {e}")
 
-                # Log start event
+            # Create job_started event (non-critical, continue if fails)
+            try:
                 future_event = asyncio.run_coroutine_threadsafe(
                     self.job_repository.create_job_event(
                         job_id=UUID(job_id),
@@ -261,9 +270,9 @@ class JobManager:
                     self._event_loop
                 )
                 future_event.result(timeout=5)
-
+                logger.info(f"Job {job_id} 'job_started' event created")
             except Exception as e:
-                logger.error(f"Failed to update job {job_id} status in database: {e}")
+                logger.warning(f"Failed to create 'job_started' event for job {job_id}: {e} (non-critical, continuing)")
 
         # Create processing thread
         thread = threading.Thread(
@@ -325,10 +334,23 @@ class JobManager:
                 """Progress callback from staged pipeline."""
                 self._emit_progress(job.job_id, progress_pct, pages_completed, stage)
 
+            # Create pipeline coordinator for container orchestration
+            pipeline_coordinator = None
+            if self.container_orchestrator:
+                from ...preprocessing.pipeline_coordinator import PipelineCoordinator
+                pipeline_coordinator = PipelineCoordinator(
+                    container_orchestrator=self.container_orchestrator,
+                    job_id=job.job_id,
+                    result_emitter=self.result_emitter,
+                    event_loop=self._event_loop
+                )
+                logger.info(f"Pipeline coordinator created for job {job.job_id}")
+
             # Initialize staged pipeline
             processor = StagedPipelineProcessor(
                 model_manager=model_manager,
                 pdf_handler=pdf_handler,
+                pipeline_coordinator=pipeline_coordinator,
                 verbose=False,
                 enable_memory_profiling=False,
                 enable_system_monitoring=True,
@@ -468,19 +490,11 @@ class JobManager:
                     logger.error(f"Failed to update job {job.job_id} failure in database: {db_error}")
 
         finally:
-            # Unload models explicitly to free GPU memory (emergency fallback)
-            if model_manager and self._event_loop:
-                try:
-                    future = asyncio.run_coroutine_threadsafe(
-                        model_manager.unload_all(),
-                        self._event_loop
-                    )
-                    unload_results = future.result(timeout=30)
-                    logger.info(f"Job {job.job_id} cleanup: unloaded models - {unload_results}")
-                except Exception as e:
-                    logger.warning(f"Failed to unload models for job {job.job_id}: {e}")
-
-            # GPU resources managed by containers
+            # GPU memory management in container mode:
+            # Models are automatically unloaded by containers after each inference
+            # via auto_unload=True flag passed through BAML service and HTTP client.
+            # No explicit cleanup needed here - containers manage their own lifecycle.
+            logger.info(f"Job {job.job_id} cleanup complete (GPU managed by containers)")
 
             # Release semaphore
             self.job_semaphore.release()
@@ -780,3 +794,22 @@ class JobManager:
                     stats[status] += 1
 
             return stats
+
+    async def wait_for_active_jobs(self) -> None:
+        """
+        Wait for all active processing jobs to complete.
+
+        Used during graceful shutdown to ensure jobs finish before cleanup.
+        Polls every 0.5 seconds until no active jobs remain.
+        """
+        while True:
+            with self.job_lock:
+                active = sum(1 for job in self.jobs.values()
+                           if job.status == JobStatus.PROCESSING)
+
+            if active == 0:
+                logger.info("No active jobs remaining")
+                break
+
+            logger.info(f"Waiting for {active} active job(s) to complete...")
+            await asyncio.sleep(0.5)

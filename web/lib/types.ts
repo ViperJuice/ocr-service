@@ -320,6 +320,7 @@ export interface OcrPageCompleteEvent {
     page_num: number;
     text: string;
     timestamp: string;
+    model?: string;  // Optional model identifier (e.g., "deepseek-ai/DeepSeek-OCR")
   };
 }
 
@@ -331,6 +332,7 @@ export interface MergePageCompleteEvent {
     timestamp: string;
     processing_time?: number;  // Processing time in seconds
     total_pages?: number;      // Total pages in job
+    model?: string;            // Optional model identifier (e.g., "Qwen/Qwen3-VL-8B-Instruct")
   };
 }
 
@@ -349,11 +351,52 @@ export interface JobCompleteEvent {
   };
 }
 
+export interface SystemMessageEvent {
+  event: "system_message";
+  data: {
+    message: string;
+    metadata: Record<string, any>;
+    timestamp: string;
+  };
+}
+
+export interface ModelReadyEvent {
+  event: "model_ready";
+  data: {
+    stage: "ocr" | "merge";
+    model: string;
+    timestamp: string;
+  };
+}
+
+export interface InferenceStartEvent {
+  event: "inference_start";
+  data: {
+    page_num: number;
+    stage: "ocr" | "merge";
+    timestamp: string;
+  };
+}
+
+export interface InferenceCompleteEvent {
+  event: "inference_complete";
+  data: {
+    page_num: number;
+    stage: "ocr" | "merge";
+    duration_seconds: number;
+    timestamp: string;
+  };
+}
+
 export type StreamResultEvent =
   | OcrPageCompleteEvent
   | MergePageCompleteEvent
   | StageCompleteEvent
-  | JobCompleteEvent;
+  | JobCompleteEvent
+  | SystemMessageEvent
+  | ModelReadyEvent
+  | InferenceStartEvent
+  | InferenceCompleteEvent;
 
 export type SSEEvent =
   | JobProgressEvent

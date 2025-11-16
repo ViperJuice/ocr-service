@@ -23,6 +23,10 @@ services:
       - TRANSFORMERS_CACHE=/root/.cache/huggingface
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
       - CUDA_LAUNCH_BLOCKING=1
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
@@ -52,6 +56,10 @@ services:
       - CUDA_VISIBLE_DEVICES=0
       - TRANSFORMERS_CACHE=/root/.cache/huggingface
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
