@@ -78,12 +78,21 @@ def mock_job_manager_with_tracking():
 
     async def create_job(**kwargs):
         """Mock create_job."""
+        from dataclasses import dataclass, field
+
+        @dataclass
+        class MockJobStatus:
+            value: str = 'queued'
+
+        @dataclass
+        class MockJob:
+            job_id: str
+            status: MockJobStatus = field(default_factory=lambda: MockJobStatus('queued'))
+            error: str = None
+            progress_pct: float = 0.0
+
         job_id = str(uuid4())
-        job = Mock()
-        job.job_id = job_id
-        job.status = Mock(value='queued')
-        job.error = None
-        job.progress_pct = 0.0  # Initialize progress_pct
+        job = MockJob(job_id=job_id)
 
         with job_lock:
             jobs[job_id] = job
@@ -107,9 +116,15 @@ def mock_job_manager_with_tracking():
     def start_job(job_id, **kwargs):
         """Mock start_job - simulate async processing with progress updates."""
         def process_job():
+            from dataclasses import dataclass
+
+            @dataclass
+            class MockJobStatus:
+                value: str
+
             with job_lock:
                 if job_id in jobs:
-                    jobs[job_id].status = Mock(value='processing')
+                    jobs[job_id].status = MockJobStatus(value='processing')
 
             # Simulate progress updates
             callback = None
@@ -136,7 +151,7 @@ def mock_job_manager_with_tracking():
             time.sleep(0.1)
             with job_lock:
                 if job_id in jobs:
-                    jobs[job_id].status = Mock(value='completed')
+                    jobs[job_id].status = MockJobStatus(value='completed')
                     jobs[job_id].progress_pct = 100.0
 
         thread = threading.Thread(target=process_job, daemon=True)
