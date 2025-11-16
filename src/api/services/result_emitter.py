@@ -43,6 +43,11 @@ class ResultEmitter:
                 logger.info("ResultEmitter reinitialized with new event loop")
             return
 
+        # THREAD SAFETY AUDIT (Phase 3.7B):
+        # - _clients dict is accessed from worker threads via emit_* methods
+        # - All emit_* methods use asyncio.run_coroutine_threadsafe() to schedule _broadcast()
+        # - _broadcast() uses asyncio.Lock (_client_lock) for dict access
+        # - Thread-safe: Worker threads don't directly access dict, only via event loop
         self._clients: Dict[str, List[asyncio.Queue]] = {}
         self._client_lock = asyncio.Lock()
         self._event_loop = event_loop  # Store reference to main event loop

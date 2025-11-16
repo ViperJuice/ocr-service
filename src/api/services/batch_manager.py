@@ -178,7 +178,7 @@ class BatchManager:
 
         # Create processing thread
         thread = threading.Thread(
-            target=self._process_batch_async,
+            target=self._process_batch_concurrent,
             args=(batch, file_manager, job_manager, prompt_manager, model_manager, progress_emitter),
             daemon=True
         )
@@ -188,7 +188,7 @@ class BatchManager:
 
         logger.info(f"Batch job processing started: {batch_job_id}")
 
-    def _process_batch_async(
+    def _process_batch_concurrent(
         self,
         batch: BatchJob,
         file_manager,
@@ -198,7 +198,31 @@ class BatchManager:
         progress_emitter
     ) -> None:
         """
-        Process batch job asynchronously (runs in background thread).
+        Process batch job concurrently (runs in background thread).
+
+        INTERFACE FROZEN: IF-0-3.7B - Concurrent Batch Processing
+
+        Concurrency:
+        - Max concurrent jobs: job_manager.max_concurrent_jobs (default: 2)
+        - Uses asyncio.gather() + Semaphore
+        - Jobs processed in FIFO order (within concurrency limit)
+
+        Progress Tracking:
+        - Emits progress after each document completes
+        - Progress = (completed_files / total_files) * 100
+        - Thread-safe: Uses batch_lock for progress updates
+
+        Error Handling:
+        - Individual job failures don't stop batch
+        - Failed jobs logged, batch continues
+        - Batch status = FAILED if ALL jobs fail
+        - Batch status = PARTIAL_SUCCESS if SOME jobs fail
+        - Batch status = COMPLETED if all jobs succeed
+
+        Cancellation:
+        - Checks batch.cancel_requested before each job
+        - Ongoing jobs finish, remaining jobs skipped
+        - Batch status = CANCELLED
 
         Args:
             batch: BatchJob object
@@ -209,184 +233,19 @@ class BatchManager:
             progress_emitter: ProgressEmitter instance
         """
         try:
-            logger.info(f"Starting batch processing: {batch.batch_job_id}")
+            logger.info(f"Starting concurrent batch processing: {batch.batch_job_id}")
 
-            # Process each document in sequence
-            for idx, file_id in enumerate(batch.file_ids):
-                # Check for cancellation
-                if batch.cancel_requested:
-                    with self.batch_lock:
-                        batch.status = BatchJobStatus.CANCELLED
-                        batch.completed_at = datetime.utcnow()
-                    logger.info(f"Batch job cancelled: {batch.batch_job_id}")
-                    return
-
-                # Get file info
-                file_info = file_manager.get_file_info(file_id)
-
-                # Create individual job for this document (from worker thread)
-                import asyncio
-                if job_manager._event_loop:
-                    future = asyncio.run_coroutine_threadsafe(
-                        job_manager.create_job(
-                            file_id=file_id,
-                            filename=file_info.filename,
-                            model=batch.model,
-                            prompt_type=batch.prompt_type,
-                            custom_prompts=batch.custom_prompts,
-                            processing_options=batch.processing_options,
-                            output_format=batch.output_format,
-                            estimated_pages=file_info.page_count
-                        ),
-                        job_manager._event_loop
-                    )
-                    job = future.result(timeout=10)
-                else:
-                    raise RuntimeError("Event loop not available for batch job creation")
-
-                # Add job to batch's document jobs
-                with self.batch_lock:
-                    batch.document_jobs[job.job_id] = job
-
-                # Set up progress callback for this job
-                def progress_callback(progress_pct: float, pages_completed: int, stage: str):
-                    """Progress callback for individual document processing."""
-                    # Update job progress
-                    job_manager.update_job_progress(job.job_id, progress_pct, pages_completed, stage)
-
-                    # Emit document progress
-                    _run_async_in_thread(
-                        progress_emitter.emit_document_progress(
-                            batch_job_id=batch.batch_job_id,
-                            job_id=job.job_id,
-                            filename=file_info.filename,
-                            progress_pct=progress_pct,
-                            current_page=pages_completed,
-                            total_pages=file_info.page_count or 1,
-                            stage=stage
-                        )
-                    )
-
-                    # Calculate and emit batch progress
-                    batch_progress_pct = ((idx + (progress_pct / 100.0)) / batch.total_documents) * 100.0
-
-                    with self.batch_lock:
-                        batch.overall_progress_pct = batch_progress_pct
-
-                    # Update database progress (Phase 2: dual-write)
-                    if self.batch_repository and self._event_loop:
-                        try:
-                            from uuid import UUID
-                            import asyncio
-
-                            future = asyncio.run_coroutine_threadsafe(
-                                self.batch_repository.update_batch_progress(
-                                    batch_job_id=UUID(batch.batch_job_id),
-                                    documents_completed=idx,
-                                    overall_progress_pct=batch_progress_pct
-                                ),
-                                self._event_loop
-                            )
-                            future.result(timeout=5)
-
-                        except Exception as e:
-                            logger.error(f"Failed to update batch {batch.batch_job_id} progress: {e}")
-
-                    current_doc_progress = {
-                        "job_id": job.job_id,
-                        "filename": file_info.filename,
-                        "progress_pct": progress_pct,
-                        "current_page": pages_completed,
-                        "total_pages": file_info.page_count or 1,
-                        "stage": stage
-                    }
-
-                    _run_async_in_thread(
-                        progress_emitter.emit_batch_progress(
-                            batch_job_id=batch.batch_job_id,
-                            overall_progress_pct=batch_progress_pct,
-                            documents_completed=idx,
-                            total_documents=batch.total_documents,
-                            current_document_id=job.job_id,
-                            current_document_progress=current_doc_progress
-                        )
-                    )
-
-                # Set progress callback in job manager
-                job_manager.set_progress_callback(job.job_id, progress_callback)
-
-                # Start processing this document
-                logger.info(f"Processing document {idx + 1}/{batch.total_documents}: {file_info.filename}")
-                job_manager.start_job(
-                    job_id=job.job_id,
-                    file_manager=file_manager,
-                    prompt_manager=prompt_manager,
-                    model_manager=model_manager
-                )
-
-                # Wait for document to complete
-                while True:
-                    job = job_manager.get_job(job.job_id)
-                    if job.status.value in ['completed', 'failed', 'cancelled']:
-                        break
-                    threading.Event().wait(1)  # Check every second
-
-                # Update batch completion count
-                with self.batch_lock:
-                    if job.status.value == 'completed':
-                        batch.documents_completed += 1
-                    elif job.status.value == 'failed':
-                        logger.error(f"Document failed in batch: {file_info.filename}: {job.error}")
-                        # Continue processing other documents even if one fails
-
-                logger.info(f"Document completed: {file_info.filename} ({batch.documents_completed}/{batch.total_documents})")
-
-            # All documents processed
-            with self.batch_lock:
-                batch.status = BatchJobStatus.COMPLETED
-                batch.completed_at = datetime.utcnow()
-                batch.overall_progress_pct = 100.0
-
-            # Update database (Phase 2: dual-write)
-            if self.batch_repository and self._event_loop:
-                try:
-                    from uuid import UUID
-                    import asyncio
-
-                    future = asyncio.run_coroutine_threadsafe(
-                        self.batch_repository.update_batch_status(
-                            batch_job_id=UUID(batch.batch_job_id),
-                            status="completed",
-                            completed_at=batch.completed_at
-                        ),
-                        self._event_loop
-                    )
-                    future.result(timeout=5)
-
-                except Exception as e:
-                    logger.error(f"Failed to update batch {batch.batch_job_id} completion: {e}")
-
-            # Emit completion event
-            processing_time = 0.0
-            if batch.started_at and batch.completed_at:
-                processing_time = (batch.completed_at - batch.started_at).total_seconds()
-
-            batch_stats = {
-                "total_documents": batch.total_documents,
-                "documents_completed": batch.documents_completed,
-                "documents_failed": batch.total_documents - batch.documents_completed,
-                "overall_processing_time_seconds": processing_time
-            }
-
+            # Run concurrent processing using asyncio
             _run_async_in_thread(
-                progress_emitter.emit_completion(
-                    job_id=batch.batch_job_id,
-                    is_batch=True,
-                    batch_stats=batch_stats
+                self._process_batch_concurrent_async(
+                    batch,
+                    file_manager,
+                    job_manager,
+                    prompt_manager,
+                    model_manager,
+                    progress_emitter
                 )
             )
-
-            logger.info(f"Batch job completed successfully: {batch.batch_job_id}")
 
         except Exception as e:
             logger.error(f"Batch job processing failed: {batch.batch_job_id}: {e}", exc_info=True)
@@ -401,7 +260,6 @@ class BatchManager:
             if self.batch_repository and self._event_loop:
                 try:
                     from uuid import UUID
-                    import asyncio
 
                     future = asyncio.run_coroutine_threadsafe(
                         self.batch_repository.update_batch_status(
@@ -432,6 +290,270 @@ class BatchManager:
             with self.batch_lock:
                 if batch.batch_job_id in self.processing_threads:
                     del self.processing_threads[batch.batch_job_id]
+
+    async def _process_batch_concurrent_async(
+        self,
+        batch: BatchJob,
+        file_manager,
+        job_manager,
+        prompt_manager,
+        model_manager,
+        progress_emitter
+    ) -> None:
+        """
+        Async implementation of concurrent batch processing.
+
+        This runs in its own event loop created by _run_async_in_thread.
+        Uses asyncio.gather() and Semaphore for concurrent job processing.
+
+        Args:
+            batch: BatchJob object
+            file_manager: FileManager instance
+            job_manager: JobManager instance
+            prompt_manager: PromptManager instance
+            model_manager: ModelManager instance
+            progress_emitter: ProgressEmitter instance
+        """
+        # Get concurrency limit from job_manager
+        max_concurrent = job_manager.max_concurrent_jobs
+        semaphore = asyncio.Semaphore(max_concurrent)
+
+        logger.info(f"Batch {batch.batch_job_id}: Processing {len(batch.file_ids)} documents with concurrency={max_concurrent}")
+
+        # Track results for status determination
+        job_results = []
+        documents_completed_count = 0
+
+        async def process_one_document(file_id: str, idx: int) -> Dict[str, Any]:
+            """Process a single document with semaphore-controlled concurrency."""
+            nonlocal documents_completed_count
+
+            async with semaphore:
+                # Check cancellation before starting
+                if batch.cancel_requested:
+                    logger.info(f"Batch {batch.batch_job_id}: Document {idx + 1} skipped (cancelled)")
+                    return {"status": "cancelled", "file_id": file_id, "idx": idx}
+
+                try:
+                    # Get file info
+                    file_info = file_manager.get_file_info(file_id)
+                    logger.info(f"Batch {batch.batch_job_id}: Starting document {idx + 1}/{batch.total_documents}: {file_info.filename}")
+
+                    # Create individual job for this document
+                    if job_manager._event_loop:
+                        future = asyncio.run_coroutine_threadsafe(
+                            job_manager.create_job(
+                                file_id=file_id,
+                                filename=file_info.filename,
+                                model=batch.model,
+                                prompt_type=batch.prompt_type,
+                                custom_prompts=batch.custom_prompts,
+                                processing_options=batch.processing_options,
+                                output_format=batch.output_format,
+                                estimated_pages=file_info.page_count
+                            ),
+                            job_manager._event_loop
+                        )
+                        job = future.result(timeout=10)
+                    else:
+                        raise RuntimeError("Event loop not available for batch job creation")
+
+                    # Add job to batch's document jobs (thread-safe)
+                    with self.batch_lock:
+                        batch.document_jobs[job.job_id] = job
+
+                    # Set up progress callback for this job
+                    def progress_callback(progress_pct: float, pages_completed: int, stage: str):
+                        """Progress callback for individual document processing."""
+                        # Update job progress
+                        job_manager.update_job_progress(job.job_id, progress_pct, pages_completed, stage)
+
+                        # Emit document progress
+                        _run_async_in_thread(
+                            progress_emitter.emit_document_progress(
+                                batch_job_id=batch.batch_job_id,
+                                job_id=job.job_id,
+                                filename=file_info.filename,
+                                progress_pct=progress_pct,
+                                current_page=pages_completed,
+                                total_pages=file_info.page_count or 1,
+                                stage=stage
+                            )
+                        )
+
+                        # Calculate and emit batch progress (thread-safe)
+                        with self.batch_lock:
+                            batch_progress_pct = ((documents_completed_count + (progress_pct / 100.0)) / batch.total_documents) * 100.0
+                            batch.overall_progress_pct = batch_progress_pct
+
+                        # Update database progress (Phase 2: dual-write)
+                        if self.batch_repository and self._event_loop:
+                            try:
+                                from uuid import UUID
+
+                                future_db = asyncio.run_coroutine_threadsafe(
+                                    self.batch_repository.update_batch_progress(
+                                        batch_job_id=UUID(batch.batch_job_id),
+                                        documents_completed=documents_completed_count,
+                                        overall_progress_pct=batch_progress_pct
+                                    ),
+                                    self._event_loop
+                                )
+                                future_db.result(timeout=5)
+
+                            except Exception as e:
+                                logger.error(f"Failed to update batch {batch.batch_job_id} progress: {e}")
+
+                        current_doc_progress = {
+                            "job_id": job.job_id,
+                            "filename": file_info.filename,
+                            "progress_pct": progress_pct,
+                            "current_page": pages_completed,
+                            "total_pages": file_info.page_count or 1,
+                            "stage": stage
+                        }
+
+                        _run_async_in_thread(
+                            progress_emitter.emit_batch_progress(
+                                batch_job_id=batch.batch_job_id,
+                                overall_progress_pct=batch_progress_pct,
+                                documents_completed=documents_completed_count,
+                                total_documents=batch.total_documents,
+                                current_document_id=job.job_id,
+                                current_document_progress=current_doc_progress
+                            )
+                        )
+
+                    # Set progress callback in job manager
+                    job_manager.set_progress_callback(job.job_id, progress_callback)
+
+                    # Start processing this document
+                    job_manager.start_job(
+                        job_id=job.job_id,
+                        file_manager=file_manager,
+                        prompt_manager=prompt_manager,
+                        model_manager=model_manager
+                    )
+
+                    # Wait for document to complete (async polling)
+                    while True:
+                        job = job_manager.get_job(job.job_id)
+                        if job.status.value in ['completed', 'failed', 'cancelled']:
+                            break
+                        await asyncio.sleep(1)  # Async sleep instead of blocking
+
+                    # Update batch completion count (thread-safe)
+                    job_status = job.status.value
+                    with self.batch_lock:
+                        if job_status == 'completed':
+                            batch.documents_completed += 1
+                            documents_completed_count += 1
+                        elif job_status == 'failed':
+                            logger.error(f"Document failed in batch: {file_info.filename}: {job.error}")
+
+                    logger.info(f"Batch {batch.batch_job_id}: Document completed: {file_info.filename} ({documents_completed_count}/{batch.total_documents})")
+
+                    return {
+                        "status": job_status,
+                        "file_id": file_id,
+                        "idx": idx,
+                        "filename": file_info.filename
+                    }
+
+                except Exception as e:
+                    logger.error(f"Batch {batch.batch_job_id}: Error processing document {idx + 1} (file_id={file_id}): {e}", exc_info=True)
+                    return {
+                        "status": "failed",
+                        "file_id": file_id,
+                        "idx": idx,
+                        "error": str(e)
+                    }
+
+        # Create tasks for all documents (FIFO order maintained by enumerate)
+        tasks = [
+            process_one_document(file_id, idx)
+            for idx, file_id in enumerate(batch.file_ids)
+        ]
+
+        # Execute all tasks concurrently with return_exceptions=True
+        # This ensures one failure doesn't stop the batch
+        job_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Check for cancellation
+        if batch.cancel_requested:
+            with self.batch_lock:
+                batch.status = BatchJobStatus.CANCELLED
+                batch.completed_at = datetime.utcnow()
+            logger.info(f"Batch job cancelled: {batch.batch_job_id}")
+            return
+
+        # Analyze results to determine final batch status
+        completed_count = sum(1 for r in job_results if isinstance(r, dict) and r.get("status") == "completed")
+        failed_count = sum(1 for r in job_results if isinstance(r, dict) and r.get("status") == "failed")
+        exception_count = sum(1 for r in job_results if isinstance(r, Exception))
+
+        total_failed = failed_count + exception_count
+
+        # Determine final batch status
+        with self.batch_lock:
+            if completed_count == len(batch.file_ids):
+                # All succeeded
+                batch.status = BatchJobStatus.COMPLETED
+            elif completed_count == 0:
+                # All failed
+                batch.status = BatchJobStatus.FAILED
+                batch.error = f"{total_failed} of {len(batch.file_ids)} documents failed"
+            else:
+                # Partial success - some succeeded, some failed
+                # Use COMPLETED status but log the partial success
+                batch.status = BatchJobStatus.COMPLETED
+                logger.warning(
+                    f"Batch {batch.batch_job_id} completed with partial success: "
+                    f"{completed_count} succeeded, {total_failed} failed"
+                )
+
+            batch.completed_at = datetime.utcnow()
+            batch.overall_progress_pct = 100.0
+
+        # Update database (Phase 2: dual-write)
+        if self.batch_repository and self._event_loop:
+            try:
+                from uuid import UUID
+
+                future = asyncio.run_coroutine_threadsafe(
+                    self.batch_repository.update_batch_status(
+                        batch_job_id=UUID(batch.batch_job_id),
+                        status=batch.status.value,
+                        completed_at=batch.completed_at
+                    ),
+                    self._event_loop
+                )
+                future.result(timeout=5)
+
+            except Exception as e:
+                logger.error(f"Failed to update batch {batch.batch_job_id} status in database: {e}")
+
+        # Emit completion event
+        processing_time = 0.0
+        if batch.started_at and batch.completed_at:
+            processing_time = (batch.completed_at - batch.started_at).total_seconds()
+
+        batch_stats = {
+            "total_documents": batch.total_documents,
+            "documents_completed": batch.documents_completed,
+            "documents_failed": batch.total_documents - batch.documents_completed,
+            "overall_processing_time_seconds": processing_time
+        }
+
+        _run_async_in_thread(
+            progress_emitter.emit_completion(
+                job_id=batch.batch_job_id,
+                is_batch=True,
+                batch_stats=batch_stats
+            )
+        )
+
+        logger.info(f"Batch job completed: {batch.batch_job_id} (status={batch.status.value})")
 
     def get_batch_job(self, batch_job_id: str) -> BatchJob:
         """

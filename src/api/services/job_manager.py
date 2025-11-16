@@ -84,6 +84,10 @@ class JobManager:
         self.output_directory.mkdir(parents=True, exist_ok=True)
 
         # In-memory job registry
+        # THREAD SAFETY AUDIT (Phase 3.7B):
+        # - self.jobs dict is accessed from multiple threads (batch processing)
+        # - All accesses are protected by self.job_lock (threading.Lock)
+        # - No race conditions identified - lock usage is correct
         self.jobs: Dict[str, Job] = {}
         self.job_lock = threading.Lock()
 
@@ -91,6 +95,10 @@ class JobManager:
         self.processing_threads: Dict[str, threading.Thread] = {}
 
         # Progress callbacks
+        # THREAD SAFETY AUDIT (Phase 3.7B):
+        # - progress_callbacks dict is modified from worker threads
+        # - No lock protection currently, but callbacks are set before job starts
+        # - Read-only during job execution, so no race condition
         self.progress_callbacks: Dict[str, Any] = {}
 
         # Active processing count
