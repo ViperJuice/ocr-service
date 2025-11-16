@@ -189,7 +189,7 @@ async def get_job_status(
         JobStatusResponse with current status
     """
     try:
-        job = job_manager.get_job(job_id)
+        job = await job_manager.get_job(job_id)
     except ValueError:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
 
@@ -235,7 +235,7 @@ async def get_job_result(
         JobResultResponse with result content
     """
     try:
-        job = job_manager.get_job(job_id)
+        job = await job_manager.get_job(job_id)
     except ValueError:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
 
@@ -246,7 +246,7 @@ async def get_job_result(
         )
 
     try:
-        result = job_manager.get_job_result(job_id)
+        result = await job_manager.get_job_result(job_id)
     except ValueError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -273,7 +273,7 @@ async def download_job_result(
         FileResponse with result file
     """
     try:
-        job = job_manager.get_job(job_id)
+        job = await job_manager.get_job(job_id)
     except ValueError:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
 
@@ -321,12 +321,12 @@ async def cancel_job(
         JobCancelResponse confirming cancellation
     """
     try:
-        job = job_manager.get_job(job_id)
+        job = await job_manager.get_job(job_id)
     except ValueError:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
 
     try:
-        job_manager.cancel_job(job_id)
+        await job_manager.cancel_job(job_id)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
 
@@ -460,7 +460,7 @@ async def get_ocr_output(
         OcrOutputResponse with all OCR page results
     """
     try:
-        job = job_manager.get_job(job_id)
+        job = await job_manager.get_job(job_id)
     except ValueError:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
 
@@ -511,7 +511,7 @@ async def get_original_file(
         FileResponse with original file
     """
     try:
-        job = job_manager.get_job(job_id)
+        job = await job_manager.get_job(job_id)
     except ValueError:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
 

@@ -83,13 +83,8 @@ class JobManager:
         self.processing_directory.mkdir(parents=True, exist_ok=True)
         self.output_directory.mkdir(parents=True, exist_ok=True)
 
-        # In-memory job registry
-        # THREAD SAFETY AUDIT (Phase 3.7B):
-        # - self.jobs dict is accessed from multiple threads (batch processing)
-        # - All accesses are protected by self.job_lock (threading.Lock)
-        # - No race conditions identified - lock usage is correct
-        self.jobs: Dict[str, Job] = {}
-        self.job_lock = threading.Lock()
+        # PHASE 4: In-memory state removed - database is single source of truth
+        # self.jobs and self.job_lock removed - all job state now in database
 
         # Processing threads
         self.processing_threads: Dict[str, threading.Thread] = {}
@@ -110,6 +105,39 @@ class JobManager:
         logger.info(
             f"JobManager initialized: processing={processing_directory}, "
             f"output={output_directory}, max_concurrent={max_concurrent_jobs}"
+        )
+
+    def _dict_to_job(self, db_record: Dict[str, Any]) -> Job:
+        """
+        Convert database record to Job dataclass.
+
+        Args:
+            db_record: Database record dict
+
+        Returns:
+            Job dataclass instance
+        """
+        return Job(
+            job_id=str(db_record['job_id']),
+            file_id=str(db_record['file_id']),
+            filename=db_record['filename'],
+            model=db_record['model'],
+            prompt_type=db_record['prompt_type'],
+            custom_prompts=db_record.get('custom_prompts'),
+            processing_options=db_record.get('processing_options', {}),
+            output_format=db_record['output_format'],
+            status=JobStatus(db_record['status']),
+            created_at=datetime.fromisoformat(db_record['created_at']) if isinstance(db_record['created_at'], str) else db_record['created_at'],
+            started_at=datetime.fromisoformat(db_record['started_at']) if db_record.get('started_at') and isinstance(db_record['started_at'], str) else db_record.get('started_at'),
+            completed_at=datetime.fromisoformat(db_record['completed_at']) if db_record.get('completed_at') and isinstance(db_record['completed_at'], str) else db_record.get('completed_at'),
+            total_pages=db_record.get('total_pages'),
+            pages_completed=db_record.get('pages_completed', 0),
+            current_stage=db_record.get('current_stage'),
+            progress_pct=db_record.get('progress_pct', 0.0),
+            result_path=Path(db_record['result_path']) if db_record.get('result_path') else None,
+            error=db_record.get('error_message'),
+            cancel_requested=db_record.get('cancel_requested', False),
+            parent_batch_id=str(db_record['parent_batch_id']) if db_record.get('parent_batch_id') else None
         )
 
     async def create_job(
@@ -141,75 +169,39 @@ class JobManager:
         """
         job_id = str(uuid.uuid4())
 
-        with self.job_lock:
-            job = Job(
-                job_id=job_id,
-                file_id=file_id,
-                filename=filename,
-                model=model,
-                prompt_type=prompt_type,
-                custom_prompts=custom_prompts,
-                processing_options=processing_options,
-                output_format=output_format,
-                status=JobStatus.QUEUED,
-                created_at=datetime.utcnow(),
-                total_pages=estimated_pages,
-            )
-            self.jobs[job_id] = job
+        # PHASE 4: Database-only (no in-memory state)
+        if not self.job_repository:
+            raise RuntimeError("Job repository required for database-only mode")
 
-        logger.info(f"Job created: {job_id} for file {file_id}")
+        from uuid import UUID
 
-        # Write to database (Phase 2: dual-write)
-        if self.job_repository:
-            try:
-                from uuid import UUID
+        # Get user_id from processing_options or use dev default
+        user_id_str = processing_options.get('user_id', 'a0000000-0000-0000-0000-000000000001')
 
-                # Get user_id from processing_options or use dev default
-                user_id_str = processing_options.get('user_id', 'a0000000-0000-0000-0000-000000000001')
+        # Write to database ONLY
+        logger.info(f"Creating job {job_id} in database for file {file_id}")
+        db_job = await self.job_repository.create_job(
+            job_id=UUID(job_id),
+            user_id=UUID(user_id_str),
+            file_id=UUID(file_id),
+            filename=filename,
+            model=model,
+            prompt_type=prompt_type,
+            custom_prompts=custom_prompts,
+            processing_options=processing_options,
+            output_format=output_format,
+            parent_batch_id=None  # Set via processing_options if needed
+        )
 
-                # Directly await - no need for run_coroutine_threadsafe since we're in async context
-                logger.info(f"[DB WRITE] Attempting to write job {job_id} to database")
-                db_job = await self.job_repository.create_job(
-                    job_id=UUID(job_id),
-                    user_id=UUID(user_id_str),
-                    file_id=UUID(file_id),
-                    filename=filename,
-                    model=model,
-                    prompt_type=prompt_type,
-                    custom_prompts=custom_prompts,
-                    processing_options=processing_options,
-                    output_format=output_format,
-                    parent_batch_id=UUID(job.parent_batch_id) if job.parent_batch_id else None
-                )
-                logger.info(f"[DB WRITE] Job create_job returned: {db_job}")
+        if not db_job:
+            raise RuntimeError(f"Failed to create job {job_id} in database")
 
-                if not db_job:
-                    logger.error(f"Job {job_id} creation in database returned None - job not created")
-                    return job  # Return early, skip event creation
+        logger.info(f"Job created in database: {job_id}")
+        return self._dict_to_job(db_job)
 
-                logger.info(f"Job {job_id} written to database")
-
-                # Skip job_event creation during initial job creation to avoid FK timing issues
-                # Job events will be created when job status changes during processing
-                # await self.job_repository.create_job_event(
-                #     job_id=UUID(job_id),
-                #     event_type="job_created",
-                #     event_data={
-                #         "filename": filename,
-                #         "model": model,
-                #         "estimated_pages": estimated_pages
-                #     }
-                # )
-
-            except Exception as e:
-                logger.error(f"Failed to write job {job_id} to database: {e}", exc_info=True)
-                # Don't fail request - fallback to in-memory
-
-        return job
-
-    def get_job(self, job_id: str) -> Job:
+    async def get_job(self, job_id: str) -> Job:
         """
-        Get job by ID.
+        Get job by ID from database.
 
         Args:
             job_id: Job ID
@@ -220,10 +212,38 @@ class JobManager:
         Raises:
             ValueError: If job not found
         """
-        with self.job_lock:
-            if job_id not in self.jobs:
-                raise ValueError(f"Job not found: {job_id}")
-            return self.jobs[job_id]
+        # PHASE 4: Read from database only
+        if not self.job_repository:
+            raise RuntimeError("Job repository required for database-only mode")
+
+        from uuid import UUID
+
+        db_job = await self.job_repository.get_job(UUID(job_id))
+
+        if not db_job:
+            raise ValueError(f"Job not found: {job_id}")
+
+        return self._dict_to_job(db_job)
+
+    async def _check_cancellation_from_db(self, job_id: str) -> bool:
+        """
+        Check if job cancelled by reading from database.
+
+        Args:
+            job_id: Job ID
+
+        Returns:
+            True if job is cancelled
+
+        Note:
+            This method is called periodically during processing to check cancellation.
+        """
+        try:
+            job = await self.get_job(job_id)
+            return job.cancel_requested
+        except Exception as e:
+            logger.error(f"Failed to check cancellation for {job_id}: {e}")
+            return False
 
     def start_job(
         self,
@@ -241,46 +261,55 @@ class JobManager:
             prompt_manager: PromptManager instance
             model_manager: ModelManager instance
         """
-        job = self.get_job(job_id)
+        # PHASE 4: Database-only - read job from database
+        if not self.job_repository or not self._event_loop:
+            raise RuntimeError("Job repository and event loop required for database-only mode")
 
-        # Update status
-        with self.job_lock:
-            job.status = JobStatus.PROCESSING
-            job.started_at = datetime.utcnow()
+        from uuid import UUID
 
-        # Update database (Phase 2: dual-write)
-        if self.job_repository and self._event_loop:
-            from uuid import UUID
+        # Get job from database
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                self.get_job(job_id),
+                self._event_loop
+            )
+            job = future.result(timeout=5)
+        except Exception as e:
+            logger.error(f"Failed to get job {job_id} from database: {e}")
+            raise
 
-            # Update job status to processing
-            try:
-                future = asyncio.run_coroutine_threadsafe(
-                    self.job_repository.update_job_status(
-                        job_id=UUID(job_id),
-                        status="processing",
-                        started_at=job.started_at
-                    ),
-                    self._event_loop
-                )
-                future.result(timeout=5)
-                logger.info(f"Job {job_id} status updated to 'processing' in database")
-            except Exception as e:
-                logger.error(f"Failed to update job {job_id} status to 'processing': {e}")
+        started_at = datetime.utcnow()
 
-            # Create job_started event (non-critical, continue if fails)
-            try:
-                future_event = asyncio.run_coroutine_threadsafe(
-                    self.job_repository.create_job_event(
-                        job_id=UUID(job_id),
-                        event_type="job_started",
-                        event_data={"started_at": job.started_at.isoformat()}
-                    ),
-                    self._event_loop
-                )
-                future_event.result(timeout=5)
-                logger.info(f"Job {job_id} 'job_started' event created")
-            except Exception as e:
-                logger.warning(f"Failed to create 'job_started' event for job {job_id}: {e} (non-critical, continuing)")
+        # PHASE 4: Update job status to processing in database only
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                self.job_repository.update_job_status(
+                    job_id=UUID(job_id),
+                    status="processing",
+                    started_at=started_at
+                ),
+                self._event_loop
+            )
+            future.result(timeout=5)
+            logger.info(f"Job {job_id} status updated to 'processing' in database")
+        except Exception as e:
+            logger.error(f"Failed to update job {job_id} status to 'processing': {e}")
+            raise
+
+        # Create job_started event (non-critical, continue if fails)
+        try:
+            future_event = asyncio.run_coroutine_threadsafe(
+                self.job_repository.create_job_event(
+                    job_id=UUID(job_id),
+                    event_type="job_started",
+                    event_data={"started_at": started_at.isoformat()}
+                ),
+                self._event_loop
+            )
+            future_event.result(timeout=5)
+            logger.info(f"Job {job_id} 'job_started' event created")
+        except Exception as e:
+            logger.warning(f"Failed to create 'job_started' event for job {job_id}: {e} (non-critical, continuing)")
 
         # Create processing thread
         thread = threading.Thread(
@@ -514,9 +543,9 @@ class JobManager:
                 if job.job_id in self.processing_threads:
                     del self.processing_threads[job.job_id]
 
-    def cancel_job(self, job_id: str) -> bool:
+    async def cancel_job(self, job_id: str) -> bool:
         """
-        Cancel a running job.
+        Cancel a running job by writing to database.
 
         Args:
             job_id: Job ID
@@ -527,7 +556,8 @@ class JobManager:
         Raises:
             ValueError: If job not found or already completed
         """
-        job = self.get_job(job_id)
+        # PHASE 4: Read from database
+        job = await self.get_job(job_id)
 
         if job.status == JobStatus.COMPLETED:
             raise ValueError("Cannot cancel completed job")
@@ -538,10 +568,6 @@ class JobManager:
         if job.status == JobStatus.CANCELLED:
             return True  # Already cancelled
 
-        # Set cancellation flag
-        with self.job_lock:
-            job.cancel_requested = True
-
         # Wait for thread to finish (with timeout)
         if job_id in self.processing_threads:
             thread = self.processing_threads[job_id]
@@ -550,45 +576,29 @@ class JobManager:
             if thread.is_alive():
                 logger.warning(f"Job thread did not terminate cleanly: {job_id}")
 
-        # Update status if not already updated by thread
-        with self.job_lock:
-            if job.status != JobStatus.CANCELLED:
-                job.status = JobStatus.CANCELLED
-                job.completed_at = datetime.utcnow()
+        # PHASE 4: Write cancellation to database only
+        if not self.job_repository:
+            raise RuntimeError("Job repository required for database-only mode")
 
-        # Update database (Phase 2: dual-write)
-        if self.job_repository and self._event_loop:
-            try:
-                from uuid import UUID
+        from uuid import UUID
 
-                future = asyncio.run_coroutine_threadsafe(
-                    self.job_repository.update_job_status(
-                        job_id=UUID(job_id),
-                        status="cancelled",
-                        completed_at=job.completed_at
-                    ),
-                    self._event_loop
-                )
-                future.result(timeout=5)
+        await self.job_repository.update_job_status(
+            job_id=UUID(job_id),
+            status="cancelled",
+            completed_at=datetime.utcnow()
+        )
 
-                # Log cancellation event
-                future_event = asyncio.run_coroutine_threadsafe(
-                    self.job_repository.create_job_event(
-                        job_id=UUID(job_id),
-                        event_type="job_cancelled",
-                        event_data={"cancelled_at": job.completed_at.isoformat()}
-                    ),
-                    self._event_loop
-                )
-                future_event.result(timeout=5)
+        # Log cancellation event
+        await self.job_repository.create_job_event(
+            job_id=UUID(job_id),
+            event_type="job_cancelled",
+            event_data={"cancelled_at": datetime.utcnow().isoformat()}
+        )
 
-            except Exception as e:
-                logger.error(f"Failed to update job {job_id} cancellation in database: {e}")
-
-        logger.info(f"Job cancelled: {job_id}")
+        logger.info(f"Job cancelled in database: {job_id}")
         return True
 
-    def get_job_result(self, job_id: str) -> Dict[str, Any]:
+    async def get_job_result(self, job_id: str) -> Dict[str, Any]:
         """
         Get job result.
 
@@ -601,7 +611,7 @@ class JobManager:
         Raises:
             ValueError: If job not found or not completed
         """
-        job = self.get_job(job_id)
+        job = await self.get_job(job_id)
 
         if job.status != JobStatus.COMPLETED:
             raise ValueError(f"Job not completed: {job.status.value}")
