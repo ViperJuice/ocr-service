@@ -116,6 +116,19 @@ class StagedPipelineProcessor:
     # Phase 3.7A: I/O Optimization constants
     OUTPUT_BUFFER_SIZE = 10  # Buffer 10 pages before writing to disk
 
+    # Phase 3.7C: Batch processing constants
+    DEFAULT_PAGE_BATCH_SIZE = 8  # Optimal balance for GPU memory and throughput
+    """
+    Default batch size for page processing (Phase 3.7C).
+
+    Batch size considerations:
+    - 4: Lower GPU memory usage, more API requests (conservative)
+    - 8: Optimal balance - recommended for most use cases
+    - 16: Maximum batch size, higher GPU memory usage (aggressive)
+
+    Can be overridden via processing_params['page_batch_size']
+    """
+
     def __init__(
         self,
         model_manager,
@@ -131,7 +144,8 @@ class StagedPipelineProcessor:
         result_emitter: Optional[Any] = None,
         job_id: Optional[str] = None,
         event_loop=None,
-        job_repository=None
+        job_repository=None,
+        processing_params: Optional[Dict] = None
     ):
         """
         Initialize staged pipeline processor.
@@ -151,6 +165,7 @@ class StagedPipelineProcessor:
             job_id: Optional job identifier for result emission
             event_loop: Optional event loop for thread-safe async operations
             job_repository: Optional JobRepository for bulk DB inserts (Phase 3.7A)
+            processing_params: Optional processing parameters (Phase 3.7C: page_batch_size)
         """
         self.model_manager = model_manager
         self.pdf_handler = pdf_handler
@@ -166,6 +181,13 @@ class StagedPipelineProcessor:
         self.job_id = job_id
         self._event_loop = event_loop
         self.job_repository = job_repository
+
+        # Phase 3.7C: Configure batch size from processing_params
+        self.page_batch_size = (
+            processing_params.get('page_batch_size', self.DEFAULT_PAGE_BATCH_SIZE)
+            if processing_params
+            else self.DEFAULT_PAGE_BATCH_SIZE
+        )
 
         # Will be initialized in process_pdf()
         self.checkpoint_manager = None
@@ -499,127 +521,139 @@ class StagedPipelineProcessor:
         total_pages = len(pages_data)
         stage_start = time.time()
 
-        # Process each page
-        for idx in range(start_page, total_pages):
-            embedded_text, image, has_text = pages_data[idx]
-            page_num = idx + 1
-            page_start = time.time()
+        # Phase 3.7C: Process pages in batches for OCR
+        if self.verbose:
+            print(f"[OCR] Processing {total_pages} pages in batches of {self.page_batch_size}")
 
-            # Update page timing in monitor
-            if self.system_monitor:
-                self.system_monitor.update_page_timing(page_start)
+        for batch_start in range(start_page, total_pages, self.page_batch_size):
+            batch_end = min(batch_start + self.page_batch_size, total_pages)
+            batch_page_nums = list(range(batch_start, batch_end))
+            batch_size = len(batch_page_nums)
 
             if self.verbose:
-                progress_pct = ((idx + 1) / total_pages) * 100
-                print(f"[OCR] Page {page_num}/{total_pages} ({progress_pct:.1f}%)...", end=" ", flush=True)
+                progress_pct = (batch_end / total_pages) * 100
+                print(f"\n[OCR] Batch {batch_start // self.page_batch_size + 1}: "
+                      f"Pages {batch_start + 1}-{batch_end} ({progress_pct:.1f}%)")
 
-            # Update monitor
-            if self.system_monitor:
-                overall_pct = (idx + 1) / total_pages * 50.0  # Stage 1 = 50% of overall
-                self.system_monitor.update_stage_progress(idx, overall_pct)
+            # Extract images for batch
+            batch_images = []
+            for page_num in batch_page_nums:
+                embedded_text, image, has_text = pages_data[page_num]
+                batch_images.append(image)
 
-            # Run OCR with container
-            page_start = time.time()
+            # Batch OCR inference (MULTIPLE images at once)
+            batch_start_time = time.time()
 
-            # Emit inference start event and system message for UI
+            # Emit inference start for first page in batch
             if self.result_emitter:
-                self.result_emitter.emit_inference_start(self.job_id, idx, "ocr")
+                self.result_emitter.emit_inference_start(self.job_id, batch_start, "ocr")
                 self.result_emitter.emit_system_message(
                     self.job_id,
-                    f"Starting OCR inference for page {idx}...",
-                    {"page": idx, "stage": "ocr"}
+                    f"Starting batch OCR inference for pages {batch_start}-{batch_end - 1} ({batch_size} pages)...",
+                    {"batch_start": batch_start, "batch_end": batch_end - 1, "batch_size": batch_size, "stage": "ocr"}
                 )
 
-            # Use BAML service if available (type-safe operations)
-            if self.baml_ocr_service:
-                ocr_model_result = run_async_in_thread(
-                    self.baml_ocr_service.extract_text_ocr(
-                        image=image,
-                        custom_prompt=self.custom_prompts.get("ocr") if self.custom_prompts else None
-                    ),
-                    event_loop=self._event_loop
-                )
-            else:
-                # Fallback to direct container call
-                logger.warning("BAML service not available, using direct container call")
-                ocr_model_result = run_async_in_thread(
-                    self.model_manager.infer_with_container(
-                        model_name=stage_config["model_name"],
-                        image=image,
-                        prompt_type="ocr"
-                    ),
-                    event_loop=self._event_loop
-                )
-
-            ocr_text = ocr_model_result.text or ""
-            page_time = time.time() - page_start
-
-            # Emit inference complete event and system message for UI
-            if self.result_emitter:
-                self.result_emitter.emit_inference_complete(self.job_id, idx, "ocr", page_time)
-                self.result_emitter.emit_system_message(
-                    self.job_id,
-                    f"Completed OCR for page {idx} in {page_time:.2f}s",
-                    {"page": idx, "stage": "ocr", "duration": page_time}
-                )
-
-            # Save to intermediate cache
-            ocr_result = OCRPageResult(
-                page_num=idx,
-                ocr_text=ocr_text,
-                method="ocr",
-                processing_time=page_time,
-                metadata={
-                    'model': stage_config["model_name"],
-                    'resolution_mode': stage_config.get("resolution_mode"),
-                    'crop_mode': stage_config.get("crop_mode")
-                }
+            # Use batch inference API
+            ocr_results = run_async_in_thread(
+                self.model_manager.infer_batch_with_container(
+                    model_name=stage_config["model_name"],
+                    images=batch_images,
+                    prompt_type="ocr",
+                    auto_unload=False  # Keep model loaded between batches
+                ),
+                event_loop=self._event_loop
             )
-            self.intermediate_cache.save_ocr_result(idx, ocr_result)
 
-            # Emit OCR result to SSE clients
-            if self.result_emitter and self.job_id:
-                # Extract actual model from OCR result metadata
-                actual_model = ocr_model_result.metadata.get("actual_model", stage_config["model_name"])
-                self.result_emitter.emit_ocr_page(self.job_id, page_num, ocr_text, model=actual_model)
+            batch_time = time.time() - batch_start_time
 
-            # Save checkpoint
+            # Emit inference complete for batch
+            if self.result_emitter:
+                self.result_emitter.emit_inference_complete(self.job_id, batch_start, "ocr", batch_time)
+                self.result_emitter.emit_system_message(
+                    self.job_id,
+                    f"Completed batch OCR in {batch_time:.2f}s ({batch_time/batch_size:.2f}s per page)",
+                    {"batch_start": batch_start, "batch_end": batch_end - 1, "duration": batch_time, "stage": "ocr"}
+                )
+
+            # Process each result in batch
+            for idx, (page_num, ocr_model_result) in enumerate(zip(batch_page_nums, ocr_results)):
+                page_number = page_num + 1
+                ocr_text = ocr_model_result.text or ""
+                page_time = ocr_model_result.processing_time
+
+                # Update page timing in monitor
+                if self.system_monitor:
+                    self.system_monitor.update_page_timing(batch_start_time + (idx * page_time))
+
+                # Update monitor
+                if self.system_monitor:
+                    overall_pct = (page_num + 1) / total_pages * 50.0  # Stage 1 = 50% of overall
+                    self.system_monitor.update_stage_progress(page_num, overall_pct)
+
+                # Save to intermediate cache
+                ocr_result = OCRPageResult(
+                    page_num=page_num,
+                    ocr_text=ocr_text,
+                    method="ocr",
+                    processing_time=page_time,
+                    metadata={
+                        'model': stage_config["model_name"],
+                        'resolution_mode': stage_config.get("resolution_mode"),
+                        'crop_mode': stage_config.get("crop_mode"),
+                        'batch_mode': True,
+                        'batch_size': batch_size,
+                        'batch_index': idx
+                    }
+                )
+                self.intermediate_cache.save_ocr_result(page_num, ocr_result)
+
+                # Emit OCR result to SSE clients
+                if self.result_emitter and self.job_id:
+                    # Extract actual model from OCR result metadata
+                    actual_model = ocr_model_result.metadata.get("actual_model", stage_config["model_name"])
+                    self.result_emitter.emit_ocr_page(self.job_id, page_number, ocr_text, model=actual_model)
+
+                # Log page completion with DeepSeek OCR metrics
+                if self.system_monitor:
+                    page_metadata = {
+                        'text': ocr_text,
+                        'resolution_mode': stage_config.get("resolution_mode"),
+                        'crop_mode': stage_config.get("crop_mode"),
+                        'batch_mode': True,
+                        'batch_size': batch_size
+                    }
+                    # Add metadata from model result if available
+                    if hasattr(ocr_model_result, 'metadata') and ocr_model_result.metadata:
+                        page_metadata.update(ocr_model_result.metadata)
+
+                    self.system_monitor.log_page_completion(
+                        page_number=page_number,
+                        stage="ocr",
+                        page_duration=page_time,
+                        page_metadata=page_metadata
+                    )
+
+                if self.verbose:
+                    print(f"  Page {page_number}: {ocr_text[:50]}... ({page_time:.2f}s)")
+
+            # Save checkpoint after batch (not after each page)
             stage_metadata = {
                 'model_used': stage_config["model_name"],
                 'resolution_mode': stage_config.get("resolution_mode"),
-                'crop_mode': stage_config.get("crop_mode")
+                'crop_mode': stage_config.get("crop_mode"),
+                'batch_mode': True,
+                'batch_size': self.page_batch_size
             }
             self.checkpoint_manager.save_stage_progress(
                 stage_name="ocr",
-                last_completed_page=idx,
+                last_completed_page=batch_end - 1,
                 total_pages=total_pages,
                 stage_metadata=stage_metadata
             )
 
-            # Emit progress (OCR is 60% of total)
-            ocr_progress = ((idx + 1) / total_pages) * 60.0
-            self._emit_progress(ocr_progress, idx + 1, "ocr")
-
-            # Log page completion with DeepSeek OCR metrics
-            if self.system_monitor:
-                page_metadata = {
-                    'text': ocr_text,
-                    'resolution_mode': stage_config.get("resolution_mode"),
-                    'crop_mode': stage_config.get("crop_mode")
-                }
-                # Add metadata from model result if available
-                if hasattr(ocr_model_result, 'metadata') and ocr_model_result.metadata:
-                    page_metadata.update(ocr_model_result.metadata)
-
-                self.system_monitor.log_page_completion(
-                    page_number=page_num,
-                    stage="ocr",
-                    page_duration=page_time,
-                    page_metadata=page_metadata
-                )
-
-            if self.verbose:
-                print(f"({page_time:.2f}s)", flush=True)
+            # Emit progress after batch (OCR is 60% of total)
+            ocr_progress = (batch_end / total_pages) * 60.0
+            self._emit_progress(ocr_progress, batch_end, "ocr")
 
         stage_time = time.time() - stage_start
 
