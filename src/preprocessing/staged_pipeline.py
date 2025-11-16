@@ -113,6 +113,9 @@ class StagedPipelineProcessor:
     - Full resume capability within any stage
     """
 
+    # Phase 3.7A: I/O Optimization constants
+    OUTPUT_BUFFER_SIZE = 10  # Buffer 10 pages before writing to disk
+
     def __init__(
         self,
         model_manager,
@@ -127,7 +130,8 @@ class StagedPipelineProcessor:
         progress_callback: Optional[Any] = None,
         result_emitter: Optional[Any] = None,
         job_id: Optional[str] = None,
-        event_loop=None
+        event_loop=None,
+        job_repository=None
     ):
         """
         Initialize staged pipeline processor.
@@ -146,6 +150,7 @@ class StagedPipelineProcessor:
             result_emitter: Optional ResultEmitter for streaming results
             job_id: Optional job identifier for result emission
             event_loop: Optional event loop for thread-safe async operations
+            job_repository: Optional JobRepository for bulk DB inserts (Phase 3.7A)
         """
         self.model_manager = model_manager
         self.pdf_handler = pdf_handler
@@ -160,6 +165,7 @@ class StagedPipelineProcessor:
         self.result_emitter = result_emitter
         self.job_id = job_id
         self._event_loop = event_loop
+        self.job_repository = job_repository
 
         # Will be initialized in process_pdf()
         self.checkpoint_manager = None
@@ -424,6 +430,17 @@ class StagedPipelineProcessor:
                     self.system_monitor.stop()
             except Exception as e:
                 logger.warning(f"Error stopping system monitor: {e}")
+
+            # Phase 3.7A: Clean up job cache directory
+            try:
+                if self.job_id and self.intermediate_cache:
+                    cache_dir = self.intermediate_cache.cache_dir
+                    if cache_dir and cache_dir.exists():
+                        import shutil
+                        shutil.rmtree(cache_dir, ignore_errors=True)
+                        logger.debug(f"Cleaned up job cache: {cache_dir}")
+            except Exception as e:
+                logger.warning(f"Error cleaning up job cache: {e}")
 
     def _run_ocr_stage(
         self,
@@ -779,6 +796,11 @@ class StagedPipelineProcessor:
         total_pages = len(pages_data)
         stage_start = time.time()
 
+        # Phase 3.7A: Initialize buffers for output and page results
+        output_buffer = []  # Buffer for output file writes
+        page_results_buffer = []  # Buffer for DB page results
+        pages_since_last_checkpoint = 0  # Track pages for adaptive checkpointing
+
         # Process each page
         for idx in range(start_page, total_pages):
             embedded_text, image, has_text = pages_data[idx]
@@ -929,15 +951,40 @@ Provide the most accurate merged version by combining both sources, fixing any O
                     {"page": idx, "stage": "merge", "duration": page_time}
                 )
 
-            # Write to output file (append mode)
-            self._write_page_result(
-                output_path=output_path,
-                page_num=page_num,
-                text=merged_text,
-                processing_time=page_time,
-                method="merge",
-                append=(idx > 0 or start_page > 0)
-            )
+            # Phase 3.7A: Buffer output instead of writing immediately
+            output_buffer.append((page_num, merged_text, page_time, "merge"))
+
+            # Phase 3.7A: Buffer page result for bulk DB insert
+            if self.job_repository and self.job_id:
+                page_results_buffer.append({
+                    "page_num": page_num,
+                    "merge_text": merged_text,
+                    "merge_processing_time": page_time
+                })
+
+            # Phase 3.7A: Flush buffers every OUTPUT_BUFFER_SIZE pages
+            if len(output_buffer) >= self.OUTPUT_BUFFER_SIZE:
+                # Flush output buffer
+                run_async_in_thread(
+                    self._flush_output_buffer(
+                        output_path=output_path,
+                        output_buffer=output_buffer,
+                        append=(idx > 0 or start_page > 0 or len(output_buffer) > 0)
+                    ),
+                    self._event_loop
+                )
+                output_buffer.clear()
+
+                # Flush page results buffer
+                if page_results_buffer:
+                    run_async_in_thread(
+                        self._flush_page_results_buffer(
+                            job_id=self.job_id,
+                            page_results_buffer=page_results_buffer
+                        ),
+                        self._event_loop
+                    )
+                    page_results_buffer.clear()
 
             # Emit merged result to SSE clients with metadata
             if self.result_emitter and self.job_id:
@@ -955,16 +1002,19 @@ Provide the most accurate merged version by combining both sources, fixing any O
                     streaming_complete=streaming_complete
                 )
 
-            # Save checkpoint
-            stage_metadata = {
-                'model_used': stage_config["model_name"]
-            }
-            self.checkpoint_manager.save_stage_progress(
-                stage_name="merge",
-                last_completed_page=idx,
-                total_pages=total_pages,
-                stage_metadata=stage_metadata
-            )
+            # Phase 3.7A: Adaptive checkpointing - only save if conditions are met
+            pages_since_last_checkpoint += 1
+            if self.checkpoint_manager.should_save_checkpoint(pages_since_last_checkpoint):
+                stage_metadata = {
+                    'model_used': stage_config["model_name"]
+                }
+                self.checkpoint_manager.save_stage_progress(
+                    stage_name="merge",
+                    last_completed_page=idx,
+                    total_pages=total_pages,
+                    stage_metadata=stage_metadata
+                )
+                pages_since_last_checkpoint = 0  # Reset counter
 
             # Emit progress (merge is 60-90% of total)
             merge_progress = 60.0 + ((idx + 1) / total_pages) * 30.0
@@ -990,6 +1040,28 @@ Provide the most accurate merged version by combining both sources, fixing any O
 
             if self.verbose:
                 print(f"({page_time:.2f}s)", flush=True)
+
+        # Phase 3.7A: Flush remaining buffered pages at end of stage
+        if output_buffer:
+            run_async_in_thread(
+                self._flush_output_buffer(
+                    output_path=output_path,
+                    output_buffer=output_buffer,
+                    append=True
+                ),
+                self._event_loop
+            )
+            output_buffer.clear()
+
+        if page_results_buffer:
+            run_async_in_thread(
+                self._flush_page_results_buffer(
+                    job_id=self.job_id,
+                    page_results_buffer=page_results_buffer
+                ),
+                self._event_loop
+            )
+            page_results_buffer.clear()
 
         stage_time = time.time() - stage_start
 
@@ -1034,3 +1106,71 @@ Provide the most accurate merged version by combining both sources, fixing any O
             f.write(text)
             f.write("\n\n")
             f.flush()
+
+    async def _flush_output_buffer(
+        self,
+        output_path: Path,
+        output_buffer: List[tuple],
+        append: bool = True
+    ) -> None:
+        """
+        Flush buffered pages to output file (Phase 3.7A).
+
+        Args:
+            output_path: Path to output file
+            output_buffer: List of (page_num, text, processing_time, method) tuples
+            append: Whether to append or overwrite
+        """
+        if not output_buffer:
+            return
+
+        mode = 'a' if append else 'w'
+
+        with open(output_path, mode, encoding='utf-8') as f:
+            for page_num, text, processing_time, method in output_buffer:
+                metadata = (
+                    f"<!-- Page {page_num} | "
+                    f"Method: {method.upper()} | "
+                    f"Time: {processing_time:.2f}s | "
+                    f"Chars: {len(text)} -->\n"
+                )
+                f.write(metadata)
+                f.write(text)
+                f.write("\n\n")
+            f.flush()
+
+        logger.debug(f"Flushed {len(output_buffer)} pages to {output_path}")
+
+    async def _flush_page_results_buffer(
+        self,
+        job_id: str,
+        page_results_buffer: List[Dict[str, Any]]
+    ) -> None:
+        """
+        Flush buffered page results to database (Phase 3.7A).
+
+        Args:
+            job_id: Job ID (UUID as string)
+            page_results_buffer: List of page result dicts
+        """
+        if not page_results_buffer or not self.job_repository:
+            return
+
+        try:
+            from uuid import UUID
+            await self.job_repository.bulk_create_page_results(
+                job_id=UUID(job_id),
+                page_results=page_results_buffer
+            )
+            logger.debug(f"Bulk inserted {len(page_results_buffer)} page results for job {job_id}")
+        except Exception as e:
+            logger.error(f"Failed to bulk insert page results: {e}")
+            # Fall back to individual inserts
+            for page_result in page_results_buffer:
+                try:
+                    await self.job_repository.create_page_result(
+                        job_id=UUID(job_id),
+                        **page_result
+                    )
+                except Exception as inner_e:
+                    logger.error(f"Failed to insert page result: {inner_e}")

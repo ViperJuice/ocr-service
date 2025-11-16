@@ -28,6 +28,11 @@ class CheckpointManager:
         self.start_time = datetime.utcnow().isoformat() + 'Z'
         self._checkpoint_data: Optional[Dict[str, Any]] = None
 
+        # Adaptive checkpointing parameters (Phase 3.7A)
+        self._last_checkpoint_time: float = 0.0
+        self._checkpoint_interval_pages: int = 5  # Checkpoint every 5 pages
+        self._checkpoint_interval_seconds: float = 30.0  # Or every 30 seconds
+
     def load(self) -> Optional[Dict[str, Any]]:
         """
         Load existing checkpoint if it exists and is valid.
@@ -192,6 +197,43 @@ class CheckpointManager:
         return checkpoint['last_completed_page'] + 1
 
     # ========== Stage-Aware Methods (New) ==========
+
+    def should_save_checkpoint(self, pages_since_last: int) -> bool:
+        """
+        Determine if checkpoint should be saved.
+
+        Checkpoint triggers (OR condition):
+        - Pages processed >= checkpoint_interval_pages (default: 5)
+        - Time elapsed >= checkpoint_interval_seconds (default: 30.0)
+
+        Args:
+            pages_since_last: Number of pages processed since last checkpoint
+
+        Returns:
+            True if checkpoint should be saved, False otherwise
+
+        Side Effects:
+            None (read-only, stateless check)
+
+        Example:
+            if checkpoint_mgr.should_save_checkpoint(pages_processed):
+                checkpoint_mgr.save_stage_progress(...)
+        """
+        import time
+
+        # Initialize last checkpoint time if not set
+        if self._last_checkpoint_time == 0.0:
+            self._last_checkpoint_time = time.time()
+            return False  # Don't save on first call
+
+        # Check time elapsed
+        time_elapsed = time.time() - self._last_checkpoint_time
+
+        # Return True if either condition is met
+        return (
+            pages_since_last >= self._checkpoint_interval_pages
+            or time_elapsed >= self._checkpoint_interval_seconds
+        )
 
     def save_stage_progress(
         self,
@@ -385,6 +427,8 @@ class CheckpointManager:
         Args:
             data: Checkpoint data to write
         """
+        import time
+
         try:
             # Write atomically using temp file
             temp_path = self.checkpoint_path.with_suffix('.checkpoint.tmp')
@@ -394,6 +438,9 @@ class CheckpointManager:
 
             # Atomic rename
             temp_path.replace(self.checkpoint_path)
+
+            # Update last checkpoint time (Phase 3.7A)
+            self._last_checkpoint_time = time.time()
 
         except IOError as e:
             logger.error(f"Failed to write checkpoint: {e}")

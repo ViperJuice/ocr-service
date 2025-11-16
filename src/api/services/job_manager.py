@@ -358,7 +358,8 @@ class JobManager:
                 progress_callback=progress_callback,
                 result_emitter=self.result_emitter,
                 job_id=job.job_id,
-                event_loop=self._event_loop
+                event_loop=self._event_loop,
+                job_repository=self.job_repository  # Phase 3.7A: For bulk DB inserts
             )
 
             # Extract page range from processing options
