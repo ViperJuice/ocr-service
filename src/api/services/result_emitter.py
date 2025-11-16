@@ -124,7 +124,8 @@ class ResultEmitter:
         text: str,
         processing_time: Optional[float] = None,
         total_pages: Optional[int] = None,
-        model: Optional[str] = None
+        model: Optional[str] = None,
+        streaming_complete: bool = False
     ) -> None:
         """
         Emit merge page completion event (called from worker thread).
@@ -136,6 +137,7 @@ class ResultEmitter:
             processing_time: Optional processing time in seconds
             total_pages: Optional total pages in job
             model: Optional model identifier (e.g., "Qwen/Qwen3-VL-8B-Instruct")
+            streaming_complete: Whether this page was completed via streaming (default: False)
         """
         event_data = {
             "page_num": page_num,
@@ -150,6 +152,8 @@ class ResultEmitter:
             event_data["total_pages"] = total_pages
         if model:
             event_data["model"] = model
+        if streaming_complete:
+            event_data["streaming_complete"] = True
 
         event = {
             "event": "merge_page_complete",
