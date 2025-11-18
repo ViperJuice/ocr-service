@@ -75,26 +75,8 @@ export default function Home() {
     setMessages((prev) => [...prev, message]);
   }, []);
 
-  // Subscribe to system messages (container orchestration status)
-  useEffect(() => {
-    if (!currentJob?.job_id) return;
-
-    const url = `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/api/v1/process/jobs/${currentJob.job_id}/stream-results`;
-    const eventSource = new EventSource(url);
-
-    eventSource.addEventListener("system_message", (event: MessageEvent) => {
-      try {
-        const data = JSON.parse(event.data);
-        addMessage("system", data.message, data.metadata);
-      } catch (err) {
-        console.error("Failed to parse system_message event:", err);
-      }
-    });
-
-    return () => {
-      eventSource.close();
-    };
-  }, [currentJob?.job_id, addMessage]);
+  // Note: System messages (container orchestration status) are now handled via Supabase Realtime
+  // The deprecated SSE endpoint /stream-results has been removed in Phase 4
 
   // Handle files dropped into chat
   const handleFilesDropped = useCallback(
@@ -244,14 +226,20 @@ export default function Home() {
               if (refactored.merge_prompt) customPrompts.merge = refactored.merge_prompt;
 
               // BAML parameters now match backend API exactly - pass through directly
-              submitJob({
-                file_id: currentFile.file_id,
-                model: orchestration.parameters.model ?? undefined,
-                prompt_type: orchestration.parameters.prompt_type ?? undefined,
-                output_format: (orchestration.parameters.output_format || outputFormat) as OutputFormat,
-                processing_options: cleanedProcessingOptions,
-                custom_prompts: Object.keys(customPrompts).length > 0 ? customPrompts : undefined,
-              });
+              try {
+                await submitJob({
+                  file_id: currentFile.file_id,
+                  model: orchestration.parameters.model ?? undefined,
+                  prompt_type: orchestration.parameters.prompt_type ?? undefined,
+                  output_format: (orchestration.parameters.output_format || outputFormat) as OutputFormat,
+                  processing_options: cleanedProcessingOptions,
+                  custom_prompts: Object.keys(customPrompts).length > 0 ? customPrompts : undefined,
+                });
+              } catch (error: any) {
+                addMessage("system", `Failed to start job: ${error.message || "Unknown error"}. Please try again.`);
+                setIsProcessing(false);
+                return;
+              }
             } else {
               // Simple job submission - BAML parameters match backend API exactly
               // Remove null values to avoid Pydantic validation errors
@@ -291,7 +279,13 @@ export default function Home() {
               console.log("Request Body:", JSON.stringify(jobRequest, null, 2));
               console.log("===============================");
 
-              submitJob(jobRequest);
+              try {
+                await submitJob(jobRequest);
+              } catch (error: any) {
+                addMessage("system", `Failed to start job: ${error.message || "Unknown error"}. Please try again.`);
+                setIsProcessing(false);
+                return;
+              }
             }
 
             setIsProcessing(false);
@@ -556,7 +550,7 @@ export default function Home() {
           {currentJob ? (
             <ReadingPanesView
               jobId={currentJob.job_id}
-              enableStreaming={!jobResult}
+              enableStreaming={false} // PHASE 4: SSE streaming disabled, endpoints return 410 Gone
             />
           ) : (
             <div className="flex-1 flex items-center justify-center text-center px-8">

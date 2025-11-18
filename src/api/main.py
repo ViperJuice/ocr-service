@@ -1,4 +1,8 @@
 """FastAPI application entry point."""
+# Load environment variables from .env file before any other imports
+from dotenv import load_dotenv
+load_dotenv()
+
 import logging
 from contextlib import asynccontextmanager
 
@@ -15,7 +19,7 @@ from .services.result_emitter import get_result_emitter, reset_result_emitter
 # GPU resource tracking removed - using container mode only
 from ..utils.system_monitor import SystemMonitor
 from ..database import initialize_supabase, get_supabase_client
-from ..database.repositories import JobRepository, FileRepository, BatchRepository
+from ..database.repositories import JobRepository, FileRepository, BatchRepository, StreamingRepository
 from .middleware import (
     http_exception_handler,
     validation_exception_handler,
@@ -55,6 +59,7 @@ async def lifespan(app: FastAPI):
     job_repository = None
     file_repository = None
     batch_repository = None
+    streaming_repository = None
 
     try:
         supabase_client = initialize_supabase(
@@ -69,7 +74,11 @@ async def lifespan(app: FastAPI):
         job_repository = JobRepository(client)
         file_repository = FileRepository(client)
         batch_repository = BatchRepository(client)
-        logger.info("✓ Repositories initialized successfully")
+
+        # Phase 4: Initialize streaming repository (requires async client)
+        async_client = await supabase_client.async_connect()
+        streaming_repository = StreamingRepository(async_client)
+        logger.info("✓ Repositories initialized successfully (including streaming)")
 
     except Exception as e:
         logger.warning(f"⚠️  Supabase initialization failed (continuing without database): {e}")
@@ -100,6 +109,33 @@ async def lifespan(app: FastAPI):
     result_emitter._event_loop = loop  # Set the event loop for thread-safe operations
     logger.info(f"ResultEmitter configured with event loop: {loop}")
 
+    # Initialize model manager (container mode only)
+    from ..models.model_manager import ModelManager
+    model_configs = settings.load_model_configs()
+    model_manager = ModelManager(
+        model_configs=model_configs['models']
+    )
+
+    # Initialize container mode
+    logger.info("Initializing container mode...")
+    await model_manager.initialize_container_mode(
+        deepseek_url=settings.deepseek_container_url,
+        qwen_url=settings.qwen_container_url,
+        timeout=settings.container_timeout
+    )
+    logger.info("✓ Container mode initialized successfully")
+
+    # Create BAMLOCRService wrapper for type-safe streaming operations
+    logger.info("Initializing BAML OCR Service...")
+    from ..services.baml_ocr_service import BAMLOCRService
+    baml_ocr_service = BAMLOCRService(
+        deepseek_url=settings.deepseek_container_url,
+        qwen_url=settings.qwen_container_url,
+        timeout=settings.container_timeout
+    )
+    await baml_ocr_service.initialize()
+    logger.info("✓ BAML OCR Service initialized")
+
     # Initialize container orchestrator (if enabled)
     container_orchestrator = None
     if settings.enable_container_orchestration:
@@ -120,7 +156,9 @@ async def lifespan(app: FastAPI):
         result_emitter=result_emitter,
         event_loop=loop,
         job_repository=job_repository,
-        container_orchestrator=container_orchestrator
+        streaming_repository=streaming_repository,  # Phase 4: Token streaming
+        container_orchestrator=container_orchestrator,
+        baml_ocr_service=baml_ocr_service  # Phase 4: Type-safe streaming OCR
     )
 
     # Initialize batch manager
@@ -131,22 +169,6 @@ async def lifespan(app: FastAPI):
         batch_repository=batch_repository,
         event_loop=loop
     )
-
-    # Initialize model manager (container mode only)
-    from ..models.model_manager import ModelManager
-    model_configs = settings.load_model_configs()
-    model_manager = ModelManager(
-        model_configs=model_configs['models']
-    )
-
-    # Initialize container mode
-    logger.info("Initializing container mode...")
-    await model_manager.initialize_container_mode(
-        deepseek_url=settings.deepseek_container_url,
-        qwen_url=settings.qwen_container_url,
-        timeout=settings.container_timeout
-    )
-    logger.info("✓ Container mode initialized successfully")
 
     # Initialize global system monitor for API
     system_monitor = SystemMonitor(
@@ -213,6 +235,15 @@ async def lifespan(app: FastAPI):
         system_monitor.stop()
 
     # Cleanup resources
+    # Close BAML OCR Service
+    if 'baml_ocr_service' in locals() and baml_ocr_service:
+        try:
+            logger.info("Closing BAML OCR Service...")
+            await baml_ocr_service.close()
+            logger.info("BAML OCR Service closed")
+        except Exception as e:
+            logger.error(f"Error closing BAML service: {e}")
+
     if model_manager:
         # Close container connections (with timeout)
         try:

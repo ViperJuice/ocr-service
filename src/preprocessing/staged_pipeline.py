@@ -5,12 +5,19 @@ from dataclasses import dataclass
 import time
 import logging
 import asyncio
+import io
+import base64
 from PIL import Image
 
 from .pdf_handler import PDFHandler
 from .checkpoint_manager import CheckpointManager
 from .intermediate_cache import IntermediateCache, OCRPageResult
 from ..utils.system_monitor import SystemMonitor
+from ..utils.snapshot_accumulator import SnapshotAccumulator
+
+# Phase 4 + BAML: Import generated BAML client
+from baml_client_py.baml_client import b
+import baml_py
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +60,32 @@ def run_async_in_thread(coro, event_loop=None):
             asyncio.set_event_loop(None)
 
 
+def async_generator_to_sync(async_gen, event_loop):
+    """
+    Convert an async generator to a sync generator using an event loop.
+
+    Args:
+        async_gen: The async generator to convert
+        event_loop: Event loop to run the async operations in
+
+    Yields:
+        Items from the async generator
+    """
+    async def _get_next():
+        """Get next item from async generator."""
+        try:
+            return await async_gen.__anext__()
+        except StopAsyncIteration:
+            return None
+
+    while True:
+        future = asyncio.run_coroutine_threadsafe(_get_next(), event_loop)
+        item = future.result()
+        if item is None:
+            break
+        yield item
+
+
 def resize_image_for_merge(image: Image.Image, max_dimension: int = 1024) -> Image.Image:
     """
     Resize image if it exceeds max_dimension to prevent CUDA OOM in Qwen merge model.
@@ -87,6 +120,25 @@ def resize_image_for_merge(image: Image.Image, max_dimension: int = 1024) -> Ima
     # Use LANCZOS for high-quality downsampling
     resized = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
     return resized
+
+
+def pil_to_baml_image(pil_image: Image.Image) -> baml_py.Image:
+    """Convert PIL Image to BAML Image format.
+
+    Args:
+        pil_image: PIL Image object
+
+    Returns:
+        BAML Image object (base64-encoded PNG)
+
+    Note:
+        BAML's OpenAI-compatible provider expects images in base64 format.
+        This function converts PIL Images to PNG format and encodes as base64.
+    """
+    buffer = io.BytesIO()
+    pil_image.save(buffer, format='PNG')
+    b64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+    return baml_py.Image.from_base64('png', b64)
 
 
 @dataclass
@@ -145,6 +197,7 @@ class StagedPipelineProcessor:
         job_id: Optional[str] = None,
         event_loop=None,
         job_repository=None,
+        streaming_repository=None,
         processing_params: Optional[Dict] = None
     ):
         """
@@ -165,6 +218,7 @@ class StagedPipelineProcessor:
             job_id: Optional job identifier for result emission
             event_loop: Optional event loop for thread-safe async operations
             job_repository: Optional JobRepository for bulk DB inserts (Phase 3.7A)
+            streaming_repository: Optional StreamingTokenRepository for Phase 4 database streaming
             processing_params: Optional processing parameters (Phase 3.7C: page_batch_size)
         """
         self.model_manager = model_manager
@@ -181,6 +235,7 @@ class StagedPipelineProcessor:
         self.job_id = job_id
         self._event_loop = event_loop
         self.job_repository = job_repository
+        self.streaming_repository = streaming_repository
 
         # Phase 3.7C: Configure batch size from processing_params
         self.page_batch_size = (
@@ -553,16 +608,60 @@ class StagedPipelineProcessor:
                     {"batch_start": batch_start, "batch_end": batch_end - 1, "batch_size": batch_size, "stage": "ocr"}
                 )
 
-            # Use batch inference API
-            ocr_results = run_async_in_thread(
-                self.model_manager.infer_batch_with_container(
-                    model_name=stage_config["model_name"],
-                    images=batch_images,
-                    prompt_type="ocr",
-                    auto_unload=False  # Keep model loaded between batches
-                ),
-                event_loop=self._event_loop
-            )
+            # Phase 4 + BAML: Use BAML client for per-page OCR (no batch support in BAML)
+            ocr_results = []
+            for idx, pil_image in enumerate(batch_images):
+                page_num = batch_page_nums[idx]
+                page_start_time = time.time()
+
+                try:
+                    # Convert PIL Image to BAML format
+                    baml_image = pil_to_baml_image(pil_image)
+
+                    # Call BAML ExtractTextOCR function
+                    ocr_text = run_async_in_thread(
+                        b.ExtractTextOCR(
+                            page_image=baml_image,
+                            custom_prompt=self.custom_prompts.get("ocr")
+                        ),
+                        event_loop=self._event_loop
+                    )
+
+                    # BAML now returns string directly
+                    page_time = time.time() - page_start_time
+
+                    # Create internal result format
+                    internal_result = OCRPageResult(
+                        page_num=page_num,
+                        ocr_text=ocr_text or "",
+                        method="ocr",
+                        processing_time=page_time,
+                        metadata={
+                            'model': stage_config["model_name"],
+                            'resolution_mode': stage_config.get("resolution_mode"),
+                            'crop_mode': stage_config.get("crop_mode"),
+                            'batch_mode': False,  # BAML doesn't support batch
+                            'via_baml': True
+                        }
+                    )
+                    ocr_results.append(internal_result)
+
+                except Exception as e:
+                    logger.error(f"BAML OCR failed for page {page_num}: {e}")
+                    # Create error result
+                    page_time = time.time() - page_start_time
+                    error_result = OCRPageResult(
+                        page_num=page_num,
+                        ocr_text="",
+                        method="ocr",
+                        processing_time=page_time,
+                        metadata={
+                            'error': str(e),
+                            'via_baml': True,
+                            'model': stage_config["model_name"]
+                        }
+                    )
+                    ocr_results.append(error_result)
 
             batch_time = time.time() - batch_start_time
 
@@ -575,11 +674,12 @@ class StagedPipelineProcessor:
                     {"batch_start": batch_start, "batch_end": batch_end - 1, "duration": batch_time, "stage": "ocr"}
                 )
 
-            # Process each result in batch
-            for idx, (page_num, ocr_model_result) in enumerate(zip(batch_page_nums, ocr_results)):
+            # Process each result (already in OCRPageResult format from BAML integration)
+            for idx, ocr_result in enumerate(ocr_results):
+                page_num = ocr_result.page_num
                 page_number = page_num + 1
-                ocr_text = ocr_model_result.text or ""
-                page_time = ocr_model_result.processing_time
+                ocr_text = ocr_result.ocr_text
+                page_time = ocr_result.processing_time
 
                 # Update page timing in monitor
                 if self.system_monitor:
@@ -590,41 +690,19 @@ class StagedPipelineProcessor:
                     overall_pct = (page_num + 1) / total_pages * 50.0  # Stage 1 = 50% of overall
                     self.system_monitor.update_stage_progress(page_num, overall_pct)
 
-                # Save to intermediate cache
-                ocr_result = OCRPageResult(
-                    page_num=page_num,
-                    ocr_text=ocr_text,
-                    method="ocr",
-                    processing_time=page_time,
-                    metadata={
-                        'model': stage_config["model_name"],
-                        'resolution_mode': stage_config.get("resolution_mode"),
-                        'crop_mode': stage_config.get("crop_mode"),
-                        'batch_mode': True,
-                        'batch_size': batch_size,
-                        'batch_index': idx
-                    }
-                )
+                # Save to intermediate cache (already in correct format)
                 self.intermediate_cache.save_ocr_result(page_num, ocr_result)
 
                 # Emit OCR result to SSE clients
                 if self.result_emitter and self.job_id:
-                    # Extract actual model from OCR result metadata
-                    actual_model = ocr_model_result.metadata.get("actual_model", stage_config["model_name"])
+                    # Extract actual model from metadata
+                    actual_model = ocr_result.metadata.get("model", stage_config["model_name"])
                     self.result_emitter.emit_ocr_page(self.job_id, page_number, ocr_text, model=actual_model)
 
-                # Log page completion with DeepSeek OCR metrics
+                # Log page completion with BAML OCR metrics
                 if self.system_monitor:
-                    page_metadata = {
-                        'text': ocr_text,
-                        'resolution_mode': stage_config.get("resolution_mode"),
-                        'crop_mode': stage_config.get("crop_mode"),
-                        'batch_mode': True,
-                        'batch_size': batch_size
-                    }
-                    # Add metadata from model result if available
-                    if hasattr(ocr_model_result, 'metadata') and ocr_model_result.metadata:
-                        page_metadata.update(ocr_model_result.metadata)
+                    page_metadata = ocr_result.metadata.copy() if ocr_result.metadata else {}
+                    page_metadata['text'] = ocr_text
 
                     self.system_monitor.log_page_completion(
                         page_number=page_number,
@@ -705,6 +783,9 @@ class StagedPipelineProcessor:
         resolution_steps = [1024, 768, 512]
         accumulated_text = ""
 
+        # Phase 4: Initialize SnapshotAccumulator for throttled database writes
+        accumulator = SnapshotAccumulator(throttle_ms=100, throttle_tokens=50)
+
         for attempt in range(max_retries):
             try:
                 # Adjust resolution for retry attempts
@@ -716,31 +797,73 @@ class StagedPipelineProcessor:
                     )
                     image = resize_image_for_merge(image, max_dimension=current_max_dim)
 
-                # Stream chunks from merge service
-                chunk_generator = run_async_in_thread(
-                    self.baml_ocr_service.merge_texts_streaming(
-                        image=image,
+                # Phase 4 + BAML: Stream chunks from BAML client
+                baml_image = pil_to_baml_image(image)
+
+                # Iterate BAML stream properly using async for
+                async def _consume_baml_stream():
+                    """Consume BAML stream and accumulate text."""
+                    accumulated = ""
+                    baml_stream = b.stream.MergeTextsStreaming(
+                        page_image=baml_image,
                         embedded_text=embedded_text,
                         ocr_text=ocr_text
-                    ),
-                    self._event_loop
-                )
+                    )
 
-                # Accumulate and emit chunks
-                accumulated_text = ""
-                for chunk in chunk_generator:
-                    accumulated_text += chunk
+                    # BAML streams implement __aiter__, use async for
+                    async for chunk in baml_stream:
+                        accumulated += chunk
 
-                    # Emit chunk to frontend via SSE
-                    if self.result_emitter and self.job_id:
-                        self.result_emitter.emit_merge_chunk(
-                            job_id=self.job_id,
-                            page_num=page_num,
-                            chunk=chunk,
-                            is_final=False
+                        # Phase 4: Throttled snapshot writes (returns snapshot if threshold met)
+                        if self.streaming_repository and self.job_id:
+                            try:
+                                from uuid import UUID
+                                snapshot = accumulator.add_chunk(chunk, is_final=False)
+
+                                if snapshot:
+                                    # Write throttled snapshot to database
+                                    await self.streaming_repository.write_snapshot(
+                                        job_id=UUID(self.job_id),
+                                        page_num=page_num,
+                                        snapshot_text=snapshot,
+                                        stage='merge',
+                                        is_final=False
+                                    )
+                            except Exception as e:
+                                logger.warning(f"Failed to write streaming snapshot: {e}")
+                                # Continue processing even if streaming fails
+
+                        # Legacy SSE emission (deprecated, will be removed in Phase 5)
+                        if self.result_emitter and self.job_id:
+                            self.result_emitter.emit_merge_chunk(
+                                job_id=self.job_id,
+                                page_num=page_num,
+                                chunk=chunk,
+                                is_final=False
+                            )
+
+                    return accumulated
+
+                # Run the async stream consumption in the event loop thread
+                accumulated_text = run_async_in_thread(_consume_baml_stream(), self._event_loop)
+
+                # Phase 4: Final flush and mark complete
+                if self.streaming_repository and self.job_id:
+                    try:
+                        from uuid import UUID
+                        final_snapshot = accumulator.flush()
+                        run_async_in_thread(
+                            self.streaming_repository.mark_complete(
+                                job_id=UUID(self.job_id),
+                                page_num=page_num,
+                                final_text=final_snapshot
+                            ),
+                            self._event_loop
                         )
+                    except Exception as e:
+                        logger.warning(f"Failed to mark stream complete: {e}")
 
-                # Emit final chunk marker
+                # Legacy SSE final chunk marker (deprecated)
                 if self.result_emitter and self.job_id:
                     self.result_emitter.emit_merge_chunk(
                         job_id=self.job_id,
@@ -759,6 +882,21 @@ class StagedPipelineProcessor:
                 return accumulated_text
 
             except Exception as e:
+                # Phase 4: Mark stream as failed on error
+                if self.streaming_repository and self.job_id:
+                    try:
+                        from uuid import UUID
+                        run_async_in_thread(
+                            self.streaming_repository.mark_failed(
+                                job_id=UUID(self.job_id),
+                                page_num=page_num,
+                                error={"message": str(e), "attempt": attempt + 1}
+                            ),
+                            self._event_loop
+                        )
+                    except Exception as mark_err:
+                        logger.warning(f"Failed to mark stream as failed: {mark_err}")
+
                 # Check if this is an OOM error based on error message
                 error_msg = str(e).lower()
                 is_oom_error = (
@@ -772,6 +910,8 @@ class StagedPipelineProcessor:
                         f"CUDA OOM detected on page {page_num} attempt {attempt + 1}, "
                         f"retrying with lower resolution..."
                     )
+                    # Reset accumulator for retry
+                    accumulator.reset()
                     continue
                 else:
                     # Not OOM or final attempt failed - re-raise
@@ -901,6 +1041,21 @@ Provide the most accurate merged version by combining both sources, fixing any O
             settings = get_settings()
 
             if settings.enable_merge_streaming and self.baml_ocr_service:
+                # Phase 4: Initialize stream row before merge processing
+                if self.streaming_repository and self.job_id:
+                    try:
+                        from uuid import UUID
+                        run_async_in_thread(
+                            self.streaming_repository.create_stream(
+                                job_id=UUID(self.job_id),
+                                page_num=page_num,
+                                stage='merge'
+                            ),
+                            self._event_loop
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to initialize stream for page {page_num}: {e}")
+
                 # Use streaming merge with OOM retry logic
                 merged_text = self._stream_merge_with_retry(
                     image=merge_image,
@@ -928,30 +1083,26 @@ Provide the most accurate merged version by combining both sources, fixing any O
                             logger.warning(f"OOM retry attempt {attempt + 1}/{max_retries}, reducing resolution to {current_max_dim}px")
                             merge_image = resize_image_for_merge(image, max_dimension=current_max_dim)
 
-                        if self.baml_ocr_service:
-                            merge_model_result = run_async_in_thread(
-                                self.baml_ocr_service.merge_texts(
-                                    image=merge_image,  # Use resized image
-                                    embedded_text=embedded_text or "",
-                                    ocr_text=ocr_result.ocr_text,
-                                    custom_prompt=self.custom_prompts.get("merge") if self.custom_prompts else None
-                                ),
-                                event_loop=self._event_loop
-                            )
-                        else:
-                            # Fallback to direct container call
-                            if attempt == 0:
-                                logger.warning("BAML service not available for merge, using direct container call")
-                            merge_model_result = run_async_in_thread(
-                                self.model_manager.infer_with_container(
-                                    model_name=stage_config["model_name"],
-                                    image=merge_image,  # Use resized image
-                                    prompt=merge_prompt,
-                                    prompt_type="merge",
-                                    auto_unload=True  # Free GPU memory after inference
-                                ),
-                                event_loop=self._event_loop
-                            )
+                        # Phase 4 + BAML: Use BAML client for non-streaming merge fallback
+                        baml_image = pil_to_baml_image(merge_image)
+                        merged_text = run_async_in_thread(
+                            b.MergeTexts(
+                                page_image=baml_image,
+                                embedded_text=embedded_text or "",
+                                ocr_text=ocr_result.ocr_text,
+                                custom_prompt=self.custom_prompts.get("merge") if self.custom_prompts else None
+                            ),
+                            event_loop=self._event_loop
+                        )
+
+                        # BAML now returns string directly
+                        merge_model_result = OCRPageResult(
+                            page_num=page_num,
+                            ocr_text=merged_text or "",
+                            method="merge",
+                            processing_time=0.0,  # BAML doesn't provide timing
+                            metadata={'via_baml': True, 'streaming': False}
+                        )
 
                         # Success - break out of retry loop
                         if attempt > 0:
@@ -1052,7 +1203,9 @@ Provide the most accurate merged version by combining both sources, fixing any O
 
             # Emit progress (merge is 60-90% of total)
             merge_progress = 60.0 + ((idx + 1) / total_pages) * 30.0
-            self._emit_progress(merge_progress, total_pages, "merge")
+            # BUG FIX: Pass actual pages completed (idx + 1), not total_pages
+            # This was causing pages_completed to jump to total_pages on first merge page
+            self._emit_progress(merge_progress, (idx + 1), "merge")
 
             # Log page completion for merge stage
             if self.system_monitor:

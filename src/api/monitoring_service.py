@@ -339,18 +339,19 @@ class MonitoringService:
                     "memory_footprint_gb": getattr(model, '_memory_footprint', 0.0)
                 }
 
-        # Add DeepSeek params if available (from current processing job)
-        active_jobs = [j for j in job_manager.jobs.values()
-                       if j.status.value == "PROCESSING"]
-        if active_jobs:
-            job = active_jobs[0]
-            if job.processing_options:
-                metrics["deepseek_params"] = {
-                    "dpi": job.processing_options.get("dpi", 300),
-                    "resolution_mode": "quality" if job.processing_options.get("prefer_quality") else "standard",
-                    "image_width": job.processing_options.get("image_width", 0),
-                    "image_height": job.processing_options.get("image_height", 0)
-                }
+        # PHASE 4: DeepSeek params retrieval disabled (database-only mode)
+        # TODO: Query database for active processing jobs instead of in-memory dict
+        # active_jobs = [j for j in job_manager.jobs.values()
+        #                if j.status.value == "PROCESSING"]
+        # if active_jobs:
+        #     job = active_jobs[0]
+        #     if job.processing_options:
+        #         metrics["deepseek_params"] = {
+        #             "dpi": job.processing_options.get("dpi", 300),
+        #             "resolution_mode": "quality" if job.processing_options.get("prefer_quality") else "standard",
+        #             "image_width": job.processing_options.get("image_width", 0),
+        #             "image_height": job.processing_options.get("image_height", 0)
+        #         }
 
         # Fetch container metrics
         containers = {}
@@ -416,18 +417,19 @@ class MonitoringService:
                     "memory_footprint_gb": getattr(model, '_memory_footprint', 0.0)
                 }
 
-        # Add DeepSeek params if available (from current processing job)
-        active_jobs = [j for j in job_manager.jobs.values()
-                       if j.status.value == "PROCESSING"]
-        if active_jobs:
-            job = active_jobs[0]
-            if job.processing_options:
-                metrics["deepseek_params"] = {
-                    "dpi": job.processing_options.get("dpi", 300),
-                    "resolution_mode": "quality" if job.processing_options.get("prefer_quality") else "standard",
-                    "image_width": job.processing_options.get("image_width", 0),
-                    "image_height": job.processing_options.get("image_height", 0)
-                }
+        # PHASE 4: DeepSeek params retrieval disabled (database-only mode)
+        # TODO: Query database for active processing jobs instead of in-memory dict
+        # active_jobs = [j for j in job_manager.jobs.values()
+        #                if j.status.value == "PROCESSING"]
+        # if active_jobs:
+        #     job = active_jobs[0]
+        #     if job.processing_options:
+        #         metrics["deepseek_params"] = {
+        #             "dpi": job.processing_options.get("dpi", 300),
+        #             "resolution_mode": "quality" if job.processing_options.get("prefer_quality") else "standard",
+        #             "image_width": job.processing_options.get("image_width", 0),
+        #             "image_height": job.processing_options.get("image_height", 0)
+        #         }
 
         return metrics
 

@@ -65,6 +65,11 @@ test_outputs/
 .coverage
 htmlcov/
 
+# Test scripts (exclude from root)
+test_*.py
+test_*.sh
+*_test.sh
+
 # Node.js / Next.js
 web/node_modules/
 web/.next/

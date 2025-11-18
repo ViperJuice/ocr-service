@@ -52,6 +52,21 @@ wheels = [
 ]
 
 [[package]]
+name = "baml-py"
+version = "0.213.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/bb/55/ad9e6681cff5e76cc9ff6ac03bbb8aae27a49a2bc5cd1f217ea4f3958979/baml_py-0.213.0-cp38-abi3-macosx_10_12_x86_64.whl", hash = "sha256:c60633816c9fc6250562414af52cb850ae242e1e6e506fd57c0a04e0c9f73be5", size = 20599963, upload-time = "2025-11-06T07:46:46.259Z" },
+    { url = "https://files.pythonhosted.org/packages/0a/e4/3ade8c951c3d660b93c9c42e501e3e39d787e3990c37ad3f77881774d923/baml_py-0.213.0-cp38-abi3-macosx_11_0_arm64.whl", hash = "sha256:949fda7447434f315ece9d25b612a93634da5e472e1bc6604cd95b429fb2e21a", size = 19241058, upload-time = "2025-11-06T07:46:48.969Z" },
+    { url = "https://files.pythonhosted.org/packages/28/84/1ce25b3ff83ac3804997e731a33044cdb3c346e0bc2ed682d0908ca0b1be/baml_py-0.213.0-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:0d779e7ed89842fcb6f347d6fb94ac3d9b468090b550988d54816a5fdaf7df32", size = 23159959, upload-time = "2025-11-06T07:46:50.989Z" },
+    { url = "https://files.pythonhosted.org/packages/4a/aa/8b9ff2230decf09463cd7492af017d0ae99135eeb6c07d16438ce8dc619e/baml_py-0.213.0-cp38-abi3-manylinux_2_24_aarch64.whl", hash = "sha256:c8d9d279711c5ac7c3f00f1b703bbade413fdcdca6add55d1cef755a636a78a2", size = 22378347, upload-time = "2025-11-06T07:46:53.399Z" },
+    { url = "https://files.pythonhosted.org/packages/74/f6/873cc95ec3ab2884bdf7495abb8b481db8d07d405ebfbd01ed018f04b470/baml_py-0.213.0-cp38-abi3-musllinux_1_1_aarch64.whl", hash = "sha256:ce06507da5b147bb3d9249b23454f07320a8a690ddee3bb1aa5502d4d8c51065", size = 22626895, upload-time = "2025-11-06T07:46:55.264Z" },
+    { url = "https://files.pythonhosted.org/packages/db/c1/fec0bf6f694726b6407984c7fdf2730c2b425dece390c676f5f87aa261f9/baml_py-0.213.0-cp38-abi3-musllinux_1_1_x86_64.whl", hash = "sha256:3a231767fef983f0553dd12047e397e4fb2c97dc536cbb06887e7b238cfa240f", size = 23293745, upload-time = "2025-11-06T07:46:57.572Z" },
+    { url = "https://files.pythonhosted.org/packages/e3/a4/6a3d79382844d64a065e961851c938d6f276bf19bc02ade64dd75f02fc1b/baml_py-0.213.0-cp38-abi3-win_amd64.whl", hash = "sha256:6732c8e6a7da4d453331015f3fc1c289af00a3bcf2595077034b5351dcc27e88", size = 20347178, upload-time = "2025-11-06T07:46:59.554Z" },
+    { url = "https://files.pythonhosted.org/packages/64/06/208fa8989b1fdbca2ec9394bd087cb569f58f25e9c6f7d95336f87110fdb/baml_py-0.213.0-cp38-abi3-win_arm64.whl", hash = "sha256:3b625695f4131769557363f13dae51f1bfb5f1159f8cc0e71154ea039c288ce6", size = 18545733, upload-time = "2025-11-06T07:47:02.741Z" },
+]
+
+[[package]]
 name = "black"
 version = "25.9.0"
 source = { registry = "https://pypi.org/simple" }
@@ -674,11 +689,21 @@ wheels = [
 ]
 
 [[package]]
+name = "nvidia-ml-py"
+version = "13.580.82"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/dd/6c/4a533f2c0185027c465adb6063086bc3728301e95f483665bfa9ebafb2d3/nvidia_ml_py-13.580.82.tar.gz", hash = "sha256:0c028805dc53a0e2a6985ea801888197765ac2ef8f1c9e29a7bf0d3616a5efc7", size = 47999, upload-time = "2025-09-11T16:44:56.267Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7f/96/d6d25a4c307d6645f4a9b91d620c0151c544ad38b5e371313a87d2761004/nvidia_ml_py-13.580.82-py3-none-any.whl", hash = "sha256:4361db337b0c551e2d101936dae2e9a60f957af26818e8c0c3a1f32b8db8d0a7", size = 49008, upload-time = "2025-09-11T16:44:54.915Z" },
+]
+
+[[package]]
 name = "ocr-service"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiofiles" },
+    { name = "baml-py" },
     { name = "click" },
     { name = "fastapi" },
     { name = "httpx" },
@@ -689,6 +714,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pymupdf" },
+    { name = "pynvml" },
     { name = "python-dotenv" },
     { name = "python-multipart" },
     { name = "pyyaml" },
@@ -711,6 +737,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "aiofiles", specifier = ">=23.0.0" },
+    { name = "baml-py", specifier = "==0.213.0" },
     { name = "black", marker = "extra == 'dev'", specifier = ">=23.0.0" },
     { name = "click", specifier = ">=8.1.0" },
     { name = "fastapi", specifier = ">=0.100.0" },
@@ -723,6 +750,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pydantic-settings", specifier = ">=2.0.0" },
     { name = "pymupdf", specifier = ">=1.23.0" },
+    { name = "pynvml", specifier = ">=11.5.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.4.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.21.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.1.0" },
@@ -1182,6 +1210,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/4f/bf/6e02e3d84b32c137c71a0a3dcdba8f2f6e9950619a3bc272245c7c06a051/pymupdf-1.26.6-cp310-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:7777d0b7124c2ebc94849536b6a1fb85d158df3b9d873935e63036559391534c", size = 24115381, upload-time = "2025-11-05T14:33:54.338Z" },
     { url = "https://files.pythonhosted.org/packages/ab/9d/30f7fcb3776bfedde66c06297960debe4883b1667294a1ee9426c942e94d/pymupdf-1.26.6-cp310-abi3-win32.whl", hash = "sha256:8f3ef05befc90ca6bb0f12983200a7048d5bff3e1c1edef1bb3de60b32cb5274", size = 17203613, upload-time = "2025-11-05T17:19:47.494Z" },
     { url = "https://files.pythonhosted.org/packages/f9/e8/989f4eaa369c7166dc24f0eaa3023f13788c40ff1b96701f7047421554a8/pymupdf-1.26.6-cp310-abi3-win_amd64.whl", hash = "sha256:ce02ca96ed0d1acfd00331a4d41a34c98584d034155b06fd4ec0f051718de7ba", size = 18405680, upload-time = "2025-11-05T14:34:48.672Z" },
+]
+
+[[package]]
+name = "pynvml"
+version = "13.0.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "nvidia-ml-py" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/5c/57/da7dc63a79f59e082e26a66ac02d87d69ea316b35b35b7a00d82f3ce3d2f/pynvml-13.0.1.tar.gz", hash = "sha256:1245991d9db786b4d2f277ce66869bd58f38ac654e38c9397d18f243c8f6e48f", size = 35226, upload-time = "2025-09-05T20:33:25.377Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d7/4a/cac76c174bb439a0c46c9a4413fcbea5c6cabfb01879f7bbdb9fdfaed76c/pynvml-13.0.1-py3-none-any.whl", hash = "sha256:e2b20e0a501eeec951e2455b7ab444759cf048e0e13a57b08049fa2775266aa8", size = 28810, upload-time = "2025-09-05T20:33:24.13Z" },
 ]
 
 [[package]]

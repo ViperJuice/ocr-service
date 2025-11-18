@@ -65,23 +65,8 @@ export function useRealtimeJob(jobId: string | null): UseRealtimeJobResult {
       return
     }
 
-    // Fetch initial job state from database
-    const fetchInitialJob = async () => {
-      try {
-        const { data, error: fetchError } = await supabase
-          .from('jobs')
-          .select('*')
-          .eq('job_id', jobId)
-          .single()
-
-        if (fetchError) throw fetchError
-        setJob(data)
-      } catch (err) {
-        setError(err instanceof Error ? err : new Error('Failed to fetch initial job'))
-      }
-    }
-
-    fetchInitialJob()
+    // Note: Skip initial fetch - we'll get the first update from Realtime subscription
+    // This avoids HTTP 406 errors from Supabase REST API content negotiation issues
 
     // Subscribe to real-time updates
     const channel = supabase

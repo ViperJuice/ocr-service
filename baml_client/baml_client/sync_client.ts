@@ -141,7 +141,7 @@ export class BamlSyncClient {
   ExtractTextOCR(
       page_image: Image,custom_prompt?: string | null,
       __baml_options__?: BamlCallOptions<never>
-  ): types.OCRResult {
+  ): string {
     try {
       const options = { ...this.bamlOptions, ...(__baml_options__ || {}) }
       const signal = options.signal;
@@ -174,7 +174,7 @@ export class BamlSyncClient {
         signal,
         options.watchers,
       )
-      return raw.parsed(false) as types.OCRResult
+      return raw.parsed(false) as string
     } catch (error: any) {
       throw toBamlError(error);
     }
@@ -267,7 +267,7 @@ export class BamlSyncClient {
   MergeTexts(
       page_image: Image,embedded_text: string,ocr_text: string,custom_prompt?: string | null,
       __baml_options__?: BamlCallOptions<never>
-  ): types.OCRResult {
+  ): string {
     try {
       const options = { ...this.bamlOptions, ...(__baml_options__ || {}) }
       const signal = options.signal;
@@ -300,7 +300,7 @@ export class BamlSyncClient {
         signal,
         options.watchers,
       )
-      return raw.parsed(false) as types.OCRResult
+      return raw.parsed(false) as string
     } catch (error: any) {
       throw toBamlError(error);
     }

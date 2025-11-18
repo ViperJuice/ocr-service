@@ -197,8 +197,8 @@ async def get_job_status(
     estimated_remaining = None
     if job.status == JobStatus.PROCESSING and job.progress_pct > 0:
         if job.started_at:
-            from datetime import datetime
-            elapsed = (datetime.utcnow() - job.started_at).total_seconds()
+            from datetime import datetime, timezone
+            elapsed = (datetime.now(timezone.utc) - job.started_at).total_seconds()
             if job.progress_pct > 0:
                 total_estimated = elapsed / (job.progress_pct / 100.0)
                 estimated_remaining = int(total_estimated - elapsed)

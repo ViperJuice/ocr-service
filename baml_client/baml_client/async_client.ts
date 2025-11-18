@@ -147,7 +147,7 @@ export type RecursivePartialNull<T> = MovedRecursivePartialNull<T>
         async ExtractTextOCR(
         page_image: Image,custom_prompt?: string | null,
         __baml_options__?: BamlCallOptions<never>
-        ): Promise<types.OCRResult> {
+        ): Promise<string> {
           try {
           const options = { ...this.bamlOptions, ...(__baml_options__ || {}) }
           const signal = options.signal;
@@ -186,7 +186,7 @@ export type RecursivePartialNull<T> = MovedRecursivePartialNull<T>
             signal,
             options.watchers,
             )
-            return raw.parsed(false) as types.OCRResult
+            return raw.parsed(false) as string
             } catch (error) {
             throw toBamlError(error);
             }
@@ -291,7 +291,7 @@ export type RecursivePartialNull<T> = MovedRecursivePartialNull<T>
         async MergeTexts(
         page_image: Image,embedded_text: string,ocr_text: string,custom_prompt?: string | null,
         __baml_options__?: BamlCallOptions<never>
-        ): Promise<types.OCRResult> {
+        ): Promise<string> {
           try {
           const options = { ...this.bamlOptions, ...(__baml_options__ || {}) }
           const signal = options.signal;
@@ -330,7 +330,7 @@ export type RecursivePartialNull<T> = MovedRecursivePartialNull<T>
             signal,
             options.watchers,
             )
-            return raw.parsed(false) as types.OCRResult
+            return raw.parsed(false) as string
             } catch (error) {
             throw toBamlError(error);
             }
@@ -467,7 +467,7 @@ export type RecursivePartialNull<T> = MovedRecursivePartialNull<T>
             ExtractTextOCR(
             page_image: Image,custom_prompt?: string | null,
             __baml_options__?: BamlCallOptions<never>
-            ): BamlStream<partial_types.OCRResult, types.OCRResult>
+            ): BamlStream<string, string>
               {
               try {
               const options = { ...this.bamlOptions, ...(__baml_options__ || {}) }
@@ -518,10 +518,10 @@ export type RecursivePartialNull<T> = MovedRecursivePartialNull<T>
                 signal,
                 onTickWrapper,
                 )
-                return new BamlStream<partial_types.OCRResult, types.OCRResult>(
+                return new BamlStream<string, string>(
                   raw,
-                  (a): partial_types.OCRResult => a,
-                  (a): types.OCRResult => a,
+                  (a): string => a,
+                  (a): string => a,
                   this.ctxManager.cloneContext(),
                   options.signal,
                   )
@@ -665,7 +665,7 @@ export type RecursivePartialNull<T> = MovedRecursivePartialNull<T>
             MergeTexts(
             page_image: Image,embedded_text: string,ocr_text: string,custom_prompt?: string | null,
             __baml_options__?: BamlCallOptions<never>
-            ): BamlStream<partial_types.OCRResult, types.OCRResult>
+            ): BamlStream<string, string>
               {
               try {
               const options = { ...this.bamlOptions, ...(__baml_options__ || {}) }
@@ -716,10 +716,10 @@ export type RecursivePartialNull<T> = MovedRecursivePartialNull<T>
                 signal,
                 onTickWrapper,
                 )
-                return new BamlStream<partial_types.OCRResult, types.OCRResult>(
+                return new BamlStream<string, string>(
                   raw,
-                  (a): partial_types.OCRResult => a,
-                  (a): types.OCRResult => a,
+                  (a): string => a,
+                  (a): string => a,
                   this.ctxManager.cloneContext(),
                   options.signal,
                   )

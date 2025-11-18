@@ -15,29 +15,27 @@ dependencies = [
     "pillow>=10.0.0",
     "PyMuPDF>=1.23.0",
     "pdf2image>=1.16.0",
-
     # API
     "fastapi>=0.100.0",
     "uvicorn[standard]>=0.23.0",
-    "python-multipart>=0.0.6",      # File uploads
+    "python-multipart>=0.0.6", # File uploads
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
-    "httpx>=0.24.0",                 # HTTP client for container communication
-
+    "httpx>=0.24.0", # HTTP client for container communication
     # CLI
     "click>=8.1.0",
-    "rich>=13.0.0",                 # Beautiful CLI output
+    "rich>=13.0.0", # Beautiful CLI output
     "tqdm>=4.65.0",
-
     # Utilities
     "python-dotenv>=1.0.0",
     "pyyaml>=6.0.0",
-    "aiofiles>=23.0.0",             # Async file operations
-    "psutil>=5.9.0",                # System monitoring
-
+    "aiofiles>=23.0.0", # Async file operations
+    "psutil>=5.9.0", # System monitoring
+    "pynvml>=11.5.0", # NVIDIA GPU monitoring
     # Database
-    "supabase>=2.0.0",              # Supabase Python client
-    "postgrest>=0.10.0",            # PostgREST client (dependency of supabase)
+    "supabase>=2.0.0", # Supabase Python client
+    "postgrest>=0.10.0", # PostgREST client (dependency of supabase)
+    "baml-py==0.213.0",
 ]
 
 [project.optional-dependencies]
@@ -59,7 +57,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*"]
+include = ["src*", "baml_client_py*"]
 
 [tool.black]
 line-length = 100

@@ -96,7 +96,7 @@ class BamlAsyncClient:
             return typing.cast(str, result.cast_to(types, types, stream_types, False, __runtime__))
     async def ExtractTextOCR(self, page_image: baml_py.Image,custom_prompt: typing.Optional[str] = None,
         baml_options: BamlCallOptions = {},
-    ) -> types.OCRResult:
+    ) -> str:
         # Check if on_tick is provided
         if 'on_tick' in baml_options:
             # Use streaming internally when on_tick is provided
@@ -108,7 +108,7 @@ class BamlAsyncClient:
             result = await self.__options.merge_options(baml_options).call_function_async(function_name="ExtractTextOCR", args={
                 "page_image": page_image,"custom_prompt": custom_prompt,
             })
-            return typing.cast(types.OCRResult, result.cast_to(types, types, stream_types, False, __runtime__))
+            return typing.cast(str, result.cast_to(types, types, stream_types, False, __runtime__))
     async def ExtractTextOCRFallback(self, page_image: baml_py.Image,custom_prompt: typing.Optional[str] = None,
         baml_options: BamlCallOptions = {},
     ) -> types.OCRResult:
@@ -141,7 +141,7 @@ class BamlAsyncClient:
             return typing.cast(types.OCRResult, result.cast_to(types, types, stream_types, False, __runtime__))
     async def MergeTexts(self, page_image: baml_py.Image,embedded_text: str,ocr_text: str,custom_prompt: typing.Optional[str] = None,
         baml_options: BamlCallOptions = {},
-    ) -> types.OCRResult:
+    ) -> str:
         # Check if on_tick is provided
         if 'on_tick' in baml_options:
             # Use streaming internally when on_tick is provided
@@ -153,7 +153,7 @@ class BamlAsyncClient:
             result = await self.__options.merge_options(baml_options).call_function_async(function_name="MergeTexts", args={
                 "page_image": page_image,"embedded_text": embedded_text,"ocr_text": ocr_text,"custom_prompt": custom_prompt,
             })
-            return typing.cast(types.OCRResult, result.cast_to(types, types, stream_types, False, __runtime__))
+            return typing.cast(str, result.cast_to(types, types, stream_types, False, __runtime__))
     async def MergeTextsStreaming(self, page_image: baml_py.Image,embedded_text: str,ocr_text: str,
         baml_options: BamlCallOptions = {},
     ) -> str:
@@ -192,14 +192,14 @@ class BamlStreamClient:
         )
     def ExtractTextOCR(self, page_image: baml_py.Image,custom_prompt: typing.Optional[str] = None,
         baml_options: BamlCallOptions = {},
-    ) -> baml_py.BamlStream[stream_types.OCRResult, types.OCRResult]:
+    ) -> baml_py.BamlStream[str, str]:
         ctx, result = self.__options.merge_options(baml_options).create_async_stream(function_name="ExtractTextOCR", args={
             "page_image": page_image,"custom_prompt": custom_prompt,
         })
-        return baml_py.BamlStream[stream_types.OCRResult, types.OCRResult](
+        return baml_py.BamlStream[str, str](
           result,
-          lambda x: typing.cast(stream_types.OCRResult, x.cast_to(types, types, stream_types, True, __runtime__)),
-          lambda x: typing.cast(types.OCRResult, x.cast_to(types, types, stream_types, False, __runtime__)),
+          lambda x: typing.cast(str, x.cast_to(types, types, stream_types, True, __runtime__)),
+          lambda x: typing.cast(str, x.cast_to(types, types, stream_types, False, __runtime__)),
           ctx,
         )
     def ExtractTextOCRFallback(self, page_image: baml_py.Image,custom_prompt: typing.Optional[str] = None,
@@ -228,14 +228,14 @@ class BamlStreamClient:
         )
     def MergeTexts(self, page_image: baml_py.Image,embedded_text: str,ocr_text: str,custom_prompt: typing.Optional[str] = None,
         baml_options: BamlCallOptions = {},
-    ) -> baml_py.BamlStream[stream_types.OCRResult, types.OCRResult]:
+    ) -> baml_py.BamlStream[str, str]:
         ctx, result = self.__options.merge_options(baml_options).create_async_stream(function_name="MergeTexts", args={
             "page_image": page_image,"embedded_text": embedded_text,"ocr_text": ocr_text,"custom_prompt": custom_prompt,
         })
-        return baml_py.BamlStream[stream_types.OCRResult, types.OCRResult](
+        return baml_py.BamlStream[str, str](
           result,
-          lambda x: typing.cast(stream_types.OCRResult, x.cast_to(types, types, stream_types, True, __runtime__)),
-          lambda x: typing.cast(types.OCRResult, x.cast_to(types, types, stream_types, False, __runtime__)),
+          lambda x: typing.cast(str, x.cast_to(types, types, stream_types, True, __runtime__)),
+          lambda x: typing.cast(str, x.cast_to(types, types, stream_types, False, __runtime__)),
           ctx,
         )
     def MergeTextsStreaming(self, page_image: baml_py.Image,embedded_text: str,ocr_text: str,

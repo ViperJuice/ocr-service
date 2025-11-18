@@ -2,10 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { Loader2, CheckCircle, XCircle, AlertTriangle } from "lucide-react";
-import { MonitoringMetrics, JobStatus } from "@/lib/types";
-import { formatDuration } from "@/lib/utils";
-import { apiClient } from "@/lib/api-client";
-import { useMergeStreaming } from "@/hooks/useMergeStreaming";
+import { JobStatus } from "@/lib/types";
+import { useRealtimeJob } from "@/hooks/useRealtimeJob";
 
 interface ProgressMonitorProps {
   jobId: string;
@@ -15,79 +13,30 @@ interface ProgressMonitorProps {
 }
 
 export function ProgressMonitor({ jobId, filename, onComplete, onError }: ProgressMonitorProps) {
-  const [metrics, setMetrics] = useState<MonitoringMetrics | null>(null);
-  const [status, setStatus] = useState<JobStatus>("queued");
+  // PHASE 4: Use Realtime job subscription instead of SSE
+  const { job, isConnected, error: realtimeError } = useRealtimeJob(jobId);
+
   const [error, setError] = useState<string | null>(null);
-  const [totalPagesProcessed, setTotalPagesProcessed] = useState<number>(0);
 
-  // Phase 3.6: Integrate merge streaming hook
-  const { mergeChunks, isStreamingActive, clearChunks } = useMergeStreaming(jobId);
-
+  // Handle job status changes
   useEffect(() => {
-    // Create SSE connection for real-time monitoring
-    const eventSource = apiClient.createMonitoringStream(jobId);
+    if (!job) return;
 
-    eventSource.onmessage = (event) => {
-      try {
-        const data: MonitoringMetrics = JSON.parse(event.data);
-        setMetrics(data);
-
-        // Track total pages processed
-        if (data.stage_total_pages > 0) {
-          setTotalPagesProcessed(data.stage_total_pages);
-        }
-
-        // Check if completed
-        if (data.overall_progress_pct >= 100) {
-          eventSource.close();
-          setStatus("completed");
-          onComplete?.();
-        }
-      } catch (err) {
-        console.error("Failed to parse SSE message:", err);
-      }
-    };
-
-    eventSource.onerror = (err) => {
-      console.error("SSE connection error:", err);
-      eventSource.close();
-
-      // Fallback to polling
-      checkJobStatus();
-    };
-
-    // Poll job status as fallback
-    const pollInterval = setInterval(checkJobStatus, 3000);
-
-    async function checkJobStatus() {
-      try {
-        const jobStatus = await apiClient.getJobStatus(jobId);
-        setStatus(jobStatus.status);
-
-        if (jobStatus.status === "completed") {
-          clearInterval(pollInterval);
-          eventSource.close();
-          onComplete?.();
-        } else if (jobStatus.status === "failed") {
-          clearInterval(pollInterval);
-          eventSource.close();
-          const errorMsg = jobStatus.error || "Job failed";
-          setError(errorMsg);
-          onError?.(errorMsg);
-        } else if (jobStatus.status === "cancelled") {
-          clearInterval(pollInterval);
-          eventSource.close();
-        }
-      } catch (err) {
-        // Silently continue polling
-      }
+    if (job.status === "completed") {
+      onComplete?.();
+    } else if (job.status === "failed") {
+      const errorMsg = job.error_message || "Job failed";
+      setError(errorMsg);
+      onError?.(errorMsg);
     }
+  }, [job?.status, job?.error_message, onComplete, onError]);
 
-    return () => {
-      eventSource.close();
-      clearInterval(pollInterval);
-    };
-  }, [jobId, onComplete, onError]);
+  // Handle Realtime connection errors
+  useEffect(() => {
+    if (realtimeError) {
+      setError(realtimeError.message);
+    }
+  }, [realtimeError]);
 
   if (error) {
     return (
@@ -101,11 +50,11 @@ export function ProgressMonitor({ jobId, filename, onComplete, onError }: Progre
     );
   }
 
-  if (status === "completed") {
-    const pageInfo = totalPagesProcessed > 1
-      ? `${totalPagesProcessed} pages processed`
+  if (job?.status === "completed") {
+    const pageInfo = job.total_pages && job.total_pages > 1
+      ? `${job.total_pages} pages processed`
       : "1 page processed";
-    const displayFilename = filename || "Document";
+    const displayFilename = filename || job.filename || "Document";
 
     return (
       <div className="flex items-center gap-3 px-4 py-3 bg-success/10 border border-success/20 rounded-lg">
@@ -118,7 +67,7 @@ export function ProgressMonitor({ jobId, filename, onComplete, onError }: Progre
     );
   }
 
-  if (status === "cancelled") {
+  if (job?.status === "cancelled") {
     return (
       <div className="flex items-center gap-3 px-4 py-3 bg-warning/10 border border-warning/20 rounded-lg">
         <AlertTriangle className="w-5 h-5 text-warning flex-shrink-0" />
@@ -129,14 +78,14 @@ export function ProgressMonitor({ jobId, filename, onComplete, onError }: Progre
     );
   }
 
-  const progress = metrics?.overall_progress_pct || 0;
-  const stage = metrics?.active_stage || "queuing";
-  const currentPage = metrics?.stage_page || 0;
-  const totalPages = metrics?.stage_total_pages || 0;
+  const progress = job?.progress_pct || 0;
+  const stage = job?.current_stage || "queuing";
+  const currentPage = job?.pages_completed || 0;
+  const totalPages = job?.total_pages || 0;
 
   // Stage descriptions
   const getStageLabel = () => {
-    if (status === "queued") return "Waiting to start...";
+    if (job?.status === "queued") return "Waiting to start...";
     switch (stage) {
       case "ocr": return "Parsing document";
       case "merge": return "Merging pages";
@@ -173,22 +122,7 @@ export function ProgressMonitor({ jobId, filename, onComplete, onError }: Progre
         </div>
       )}
 
-      {/* Phase 3.6: Streaming merge text preview with typewriter effect */}
-      {stage === "merge" && currentPage > 0 && mergeChunks.has(currentPage) && (
-        <div className="mt-3 p-3 bg-primary/5 border border-primary/20 rounded-md" role="status" aria-live="polite" aria-label="Merge streaming preview">
-          <div className="text-xs text-text-muted mb-1.5 font-medium">
-            Live merge preview (Page {currentPage}):
-          </div>
-          <div className="text-sm text-text-secondary font-mono leading-relaxed max-h-24 overflow-y-auto">
-            <span className="streaming-text">
-              {mergeChunks.get(currentPage)}
-            </span>
-            {isStreamingActive.get(currentPage) && (
-              <span className="streaming-cursor" aria-hidden="true">|</span>
-            )}
-          </div>
-        </div>
-      )}
+      {/* PHASE 4: Merge streaming preview removed - SSE deprecated */}
 
       {/* Details */}
       {totalPages > 1 && (

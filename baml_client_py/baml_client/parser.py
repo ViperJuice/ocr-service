@@ -32,9 +32,9 @@ class LlmResponseParser:
 
     def ExtractTextOCR(
         self, llm_response: str, baml_options: BamlCallOptions = {},
-    ) -> types.OCRResult:
+    ) -> str:
         result = self.__options.merge_options(baml_options).parse_response(function_name="ExtractTextOCR", llm_response=llm_response, mode="request")
-        return typing.cast(types.OCRResult, result)
+        return typing.cast(str, result)
 
     def ExtractTextOCRFallback(
         self, llm_response: str, baml_options: BamlCallOptions = {},
@@ -50,9 +50,9 @@ class LlmResponseParser:
 
     def MergeTexts(
         self, llm_response: str, baml_options: BamlCallOptions = {},
-    ) -> types.OCRResult:
+    ) -> str:
         result = self.__options.merge_options(baml_options).parse_response(function_name="MergeTexts", llm_response=llm_response, mode="request")
-        return typing.cast(types.OCRResult, result)
+        return typing.cast(str, result)
 
     def MergeTextsStreaming(
         self, llm_response: str, baml_options: BamlCallOptions = {},
@@ -76,9 +76,9 @@ class LlmStreamParser:
 
     def ExtractTextOCR(
         self, llm_response: str, baml_options: BamlCallOptions = {},
-    ) -> stream_types.OCRResult:
+    ) -> str:
         result = self.__options.merge_options(baml_options).parse_response(function_name="ExtractTextOCR", llm_response=llm_response, mode="stream")
-        return typing.cast(stream_types.OCRResult, result)
+        return typing.cast(str, result)
 
     def ExtractTextOCRFallback(
         self, llm_response: str, baml_options: BamlCallOptions = {},
@@ -94,9 +94,9 @@ class LlmStreamParser:
 
     def MergeTexts(
         self, llm_response: str, baml_options: BamlCallOptions = {},
-    ) -> stream_types.OCRResult:
+    ) -> str:
         result = self.__options.merge_options(baml_options).parse_response(function_name="MergeTexts", llm_response=llm_response, mode="stream")
-        return typing.cast(stream_types.OCRResult, result)
+        return typing.cast(str, result)
 
     def MergeTextsStreaming(
         self, llm_response: str, baml_options: BamlCallOptions = {},

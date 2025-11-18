@@ -5,7 +5,7 @@ import logging
 import time
 import asyncio
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Optional, Any
 from dataclasses import dataclass
 from enum import Enum
@@ -58,7 +58,9 @@ class JobManager:
         result_emitter=None,
         event_loop=None,
         job_repository=None,
-        container_orchestrator=None
+        streaming_repository=None,
+        container_orchestrator=None,
+        baml_ocr_service=None
     ):
         """
         Initialize job manager.
@@ -70,7 +72,9 @@ class JobManager:
             result_emitter: Optional ResultEmitter for streaming results
             event_loop: Optional event loop for thread-safe async operations
             job_repository: Optional JobRepository for database writes (Phase 2)
+            streaming_repository: Optional StreamingTokenRepository for Phase 4 streaming
             container_orchestrator: Optional ContainerOrchestrator for lifecycle management
+            baml_ocr_service: Optional BAMLOCRService for type-safe OCR operations with streaming
         """
         self.processing_directory = Path(processing_directory)
         self.output_directory = Path(output_directory)
@@ -78,7 +82,9 @@ class JobManager:
         self.result_emitter = result_emitter
         self._event_loop = event_loop
         self.job_repository = job_repository
+        self.streaming_repository = streaming_repository
         self.container_orchestrator = container_orchestrator
+        self.baml_ocr_service = baml_ocr_service
 
         self.processing_directory.mkdir(parents=True, exist_ok=True)
         self.output_directory.mkdir(parents=True, exist_ok=True)
@@ -261,26 +267,54 @@ class JobManager:
             prompt_manager: PromptManager instance
             model_manager: ModelManager instance
         """
-        # PHASE 4: Database-only - read job from database
+        # PHASE 4: Database-only - job will be fetched by the processing thread
         if not self.job_repository or not self._event_loop:
             raise RuntimeError("Job repository and event loop required for database-only mode")
 
+        # Create processing thread - it will fetch job from database and update status
+        thread = threading.Thread(
+            target=self._process_job_async,
+            args=(job_id, file_manager, prompt_manager, model_manager),
+            daemon=True
+        )
+
+        self.processing_threads[job_id] = thread
+        thread.start()
+
+        logger.info(f"Job processing thread started: {job_id}")
+
+    def _process_job_async(
+        self,
+        job_id: str,
+        file_manager,
+        prompt_manager,
+        model_manager
+    ) -> None:
+        """
+        Process job asynchronously (runs in background thread).
+
+        Args:
+            job_id: Job ID
+            file_manager: FileManager instance
+            prompt_manager: PromptManager instance
+            model_manager: ModelManager instance
+        """
         from uuid import UUID
 
-        # Get job from database
+        # PHASE 4: Fetch job from database at the start of processing
         try:
             future = asyncio.run_coroutine_threadsafe(
                 self.get_job(job_id),
                 self._event_loop
             )
-            job = future.result(timeout=5)
+            job = future.result(timeout=10)
+            logger.info(f"Job {job_id} fetched from database successfully")
         except Exception as e:
-            logger.error(f"Failed to get job {job_id} from database: {e}")
-            raise
+            logger.error(f"Failed to fetch job {job_id} from database: {e}")
+            return
 
-        started_at = datetime.utcnow()
-
-        # PHASE 4: Update job status to processing in database only
+        # Update job status to processing
+        started_at = datetime.now(timezone.utc)
         try:
             future = asyncio.run_coroutine_threadsafe(
                 self.job_repository.update_job_status(
@@ -294,7 +328,7 @@ class JobManager:
             logger.info(f"Job {job_id} status updated to 'processing' in database")
         except Exception as e:
             logger.error(f"Failed to update job {job_id} status to 'processing': {e}")
-            raise
+            return
 
         # Create job_started event (non-critical, continue if fails)
         try:
@@ -311,34 +345,6 @@ class JobManager:
         except Exception as e:
             logger.warning(f"Failed to create 'job_started' event for job {job_id}: {e} (non-critical, continuing)")
 
-        # Create processing thread
-        thread = threading.Thread(
-            target=self._process_job_async,
-            args=(job, file_manager, prompt_manager, model_manager),
-            daemon=True
-        )
-
-        self.processing_threads[job_id] = thread
-        thread.start()
-
-        logger.info(f"Job processing started: {job_id}")
-
-    def _process_job_async(
-        self,
-        job: Job,
-        file_manager,
-        prompt_manager,
-        model_manager
-    ) -> None:
-        """
-        Process job asynchronously (runs in background thread).
-
-        Args:
-            job: Job object
-            file_manager: FileManager instance
-            prompt_manager: PromptManager instance
-            model_manager: ModelManager instance
-        """
         # Acquire semaphore to enforce max concurrent jobs
         logger.info(f"Job {job.job_id} waiting for processing slot...")
         self.job_semaphore.acquire()
@@ -396,7 +402,9 @@ class JobManager:
                 result_emitter=self.result_emitter,
                 job_id=job.job_id,
                 event_loop=self._event_loop,
-                job_repository=self.job_repository  # Phase 3.7A: For bulk DB inserts
+                job_repository=self.job_repository,  # Phase 3.7A: For bulk DB inserts
+                streaming_repository=self.streaming_repository,  # Phase 4: For token streaming
+                baml_ocr_service=self.baml_ocr_service  # Phase 4: For type-safe streaming OCR
             )
 
             # Extract page range from processing options
@@ -405,9 +413,7 @@ class JobManager:
 
             # Check for cancellation before starting
             if job.cancel_requested:
-                with self.job_lock:
-                    job.status = JobStatus.CANCELLED
-                    job.completed_at = datetime.utcnow()
+                # PHASE 4: Job state managed in database only
                 logger.info(f"Job cancelled before processing: {job.job_id}")
                 return
 
@@ -425,22 +431,16 @@ class JobManager:
 
             # Check for cancellation after processing
             if job.cancel_requested:
-                with self.job_lock:
-                    job.status = JobStatus.CANCELLED
-                    job.completed_at = datetime.utcnow()
+                # PHASE 4: Job state managed in database only
                 logger.info(f"Job cancelled after processing: {job.job_id}")
                 return
 
-            # Update job status
-            with self.job_lock:
-                job.status = JobStatus.COMPLETED
-                job.completed_at = datetime.utcnow()
-                job.result_path = output_path
-                job.total_pages = result.get('total_pages')
-                job.pages_completed = result.get('total_pages', 0)
-                job.progress_pct = 100.0
+            # PHASE 4: Job completion tracked in database only (via update below)
+            completed_at = datetime.now(timezone.utc)
+            total_pages = result.get('total_pages')
+            pages_completed = result.get('total_pages', 0)
 
-            # Update database (Phase 2: dual-write)
+            # PHASE 4: Update database (database is single source of truth)
             if self.job_repository and self._event_loop:
                 try:
                     from uuid import UUID
@@ -449,13 +449,13 @@ class JobManager:
                         self.job_repository.update_job_status(
                             job_id=UUID(job.job_id),
                             status="completed",
-                            completed_at=job.completed_at
+                            completed_at=completed_at
                         ),
                         self._event_loop
                     )
                     future.result(timeout=5)
 
-                    # Update result path
+                    # Update result path and progress
                     future_result = asyncio.run_coroutine_threadsafe(
                         self.job_repository.update_job_result(
                             job_id=UUID(job.job_id),
@@ -465,14 +465,34 @@ class JobManager:
                     )
                     future_result.result(timeout=5)
 
+                    # Update total pages and final progress
+                    future_progress = asyncio.run_coroutine_threadsafe(
+                        self.job_repository.update_job_progress(
+                            job_id=UUID(job.job_id),
+                            progress_pct=100.0,
+                            pages_completed=pages_completed,
+                            current_stage="completed",
+                            total_pages=total_pages
+                        ),
+                        self._event_loop
+                    )
+                    future_progress.result(timeout=5)
+
+                    # Get started_at from job for processing time calculation
+                    future_get_job = asyncio.run_coroutine_threadsafe(
+                        self.get_job(job.job_id),
+                        self._event_loop
+                    )
+                    job_from_db = future_get_job.result(timeout=5)
+                    processing_time = (completed_at - job_from_db.started_at).total_seconds() if job_from_db and job_from_db.started_at else 0
+
                     # Log completion event
-                    processing_time = (job.completed_at - job.started_at).total_seconds() if job.started_at else 0
                     future_event = asyncio.run_coroutine_threadsafe(
                         self.job_repository.create_job_event(
                             job_id=UUID(job.job_id),
                             event_type="job_completed",
                             event_data={
-                                "total_pages": job.total_pages,
+                                "total_pages": total_pages,
                                 "processing_time": processing_time
                             }
                         ),
@@ -488,13 +508,10 @@ class JobManager:
         except Exception as e:
             logger.error(f"Job processing failed: {job.job_id}: {e}", exc_info=True)
 
-            # Update job status to failed
-            with self.job_lock:
-                job.status = JobStatus.FAILED
-                job.completed_at = datetime.utcnow()
-                job.error = str(e)
+            # PHASE 4: Job failure tracked in database only
+            failed_at = datetime.now(timezone.utc)
 
-            # Update database (Phase 2: dual-write)
+            # Update database (database is single source of truth)
             if self.job_repository and self._event_loop:
                 try:
                     from uuid import UUID
@@ -504,7 +521,7 @@ class JobManager:
                             job_id=UUID(job.job_id),
                             status="failed",
                             error_message=str(e),
-                            completed_at=job.completed_at
+                            completed_at=failed_at
                         ),
                         self._event_loop
                     )
@@ -539,9 +556,9 @@ class JobManager:
             logger.info(f"Job {job.job_id} released processing slot")
 
             # Cleanup thread reference
-            with self.job_lock:
-                if job.job_id in self.processing_threads:
-                    del self.processing_threads[job.job_id]
+            # PHASE 4: Thread cleanup doesn't need lock (dict operations are atomic for single key)
+            if job.job_id in self.processing_threads:
+                del self.processing_threads[job.job_id]
 
     async def cancel_job(self, job_id: str) -> bool:
         """
@@ -585,14 +602,14 @@ class JobManager:
         await self.job_repository.update_job_status(
             job_id=UUID(job_id),
             status="cancelled",
-            completed_at=datetime.utcnow()
+            completed_at=datetime.now(timezone.utc)
         )
 
         # Log cancellation event
         await self.job_repository.create_job_event(
             job_id=UUID(job_id),
             event_type="job_cancelled",
-            event_data={"cancelled_at": datetime.utcnow().isoformat()}
+            event_data={"cancelled_at": datetime.now(timezone.utc).isoformat()}
         )
 
         logger.info(f"Job cancelled in database: {job_id}")
@@ -687,24 +704,20 @@ class JobManager:
             pages_completed: Number of pages completed
             stage: Current stage name
         """
-        # Update in-memory (existing)
-        with self.job_lock:
-            if job_id in self.jobs:
-                job = self.jobs[job_id]
-                job.progress_pct = progress_pct
-                job.pages_completed = pages_completed
-                job.current_stage = stage
+        # PHASE 4: Database-only mode - no in-memory state to update
 
-        # Update database (Phase 2: dual-write)
+        # Update database (database is single source of truth)
         if self.job_repository and self._event_loop:
             try:
                 from uuid import UUID
 
-                # Get total pages from in-memory job
-                total_pages = None
-                with self.job_lock:
-                    if job_id in self.jobs:
-                        total_pages = self.jobs[job_id].total_pages
+                # Get total pages from database if needed
+                future_get = asyncio.run_coroutine_threadsafe(
+                    self.get_job(job_id),
+                    self._event_loop
+                )
+                job = future_get.result(timeout=5)
+                total_pages = job.total_pages if job else None
 
                 future = asyncio.run_coroutine_threadsafe(
                     self.job_repository.update_job_progress(
@@ -768,28 +781,11 @@ class JobManager:
         Returns:
             Number of jobs cleaned up
         """
-        with self.job_lock:
-            # Sort jobs by creation time
-            sorted_jobs = sorted(
-                self.jobs.values(),
-                key=lambda j: j.created_at,
-                reverse=True
-            )
-
-            # Keep only completed/failed jobs beyond max
-            jobs_to_remove = []
-            for job in sorted_jobs[max_jobs:]:
-                if job.status in [JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED]:
-                    jobs_to_remove.append(job.job_id)
-
-            # Remove jobs
-            for job_id in jobs_to_remove:
-                del self.jobs[job_id]
-
-            if jobs_to_remove:
-                logger.info(f"Cleaned up {len(jobs_to_remove)} old jobs")
-
-            return len(jobs_to_remove)
+        # PHASE 4: Database-only mode - no in-memory jobs to clean up
+        # This method is now a no-op as cleanup should be handled at the database level
+        # Consider implementing database-level archival/cleanup if needed
+        logger.info("cleanup_old_jobs called in database-only mode - no action taken")
+        return 0
 
     def get_queue_stats(self) -> dict:
         """
@@ -798,21 +794,18 @@ class JobManager:
         Returns:
             Dictionary with counts for each job status
         """
-        with self.job_lock:
-            stats = {
-                "queued": 0,
-                "processing": 0,
-                "completed": 0,
-                "failed": 0,
-                "cancelled": 0
-            }
-
-            for job in self.jobs.values():
-                status = job.status.value.lower() if hasattr(job.status, 'value') else str(job.status).lower()
-                if status in stats:
-                    stats[status] += 1
-
-            return stats
+        # PHASE 4: Database-only mode - no in-memory jobs to count
+        # This method should query the database for stats
+        # For now, return empty stats with a warning
+        logger.warning("get_queue_stats called in database-only mode - returning empty stats")
+        stats = {
+            "queued": 0,
+            "processing": 0,
+            "completed": 0,
+            "failed": 0,
+            "cancelled": 0
+        }
+        return stats
 
     async def wait_for_active_jobs(self) -> None:
         """
@@ -821,14 +814,20 @@ class JobManager:
         Used during graceful shutdown to ensure jobs finish before cleanup.
         Polls every 0.5 seconds until no active jobs remain.
         """
-        while True:
-            with self.job_lock:
-                active = sum(1 for job in self.jobs.values()
-                           if job.status == JobStatus.PROCESSING)
+        # PHASE 4: Database-only mode - query database for active jobs
+        if not self.job_repository:
+            logger.warning("wait_for_active_jobs called without job_repository - cannot check active jobs")
+            return
 
-            if active == 0:
-                logger.info("No active jobs remaining")
+        while True:
+            # Query database for active jobs
+            # Note: This would require adding a method to job_repository to count active jobs
+            # For now, just check if we have any processing threads
+            active_threads = len(self.processing_threads)
+
+            if active_threads == 0:
+                logger.info("No active job threads remaining")
                 break
 
-            logger.info(f"Waiting for {active} active job(s) to complete...")
+            logger.info(f"Waiting for {active_threads} active job thread(s) to complete...")
             await asyncio.sleep(0.5)

@@ -320,15 +320,9 @@ export function createSystemMonitoringStream(): EventSource {
 }
 
 /**
- * Create an EventSource connection for streaming OCR and merge results.
- *
- * This establishes a Server-Sent Events connection to receive real-time
- * page results as they complete during processing.
+ * DEPRECATED: SSE streaming has been replaced with Supabase Realtime in Phase 4.
+ * Use useRealtimeJob hook instead.
  */
-export function createResultStream(jobId: string): EventSource {
-  const url = `${API_BASE_URL}/api/v1/process/jobs/${jobId}/stream-results`;
-  return new EventSource(url);
-}
 
 // ============================================================================
 // Centralized API Client Object
@@ -363,5 +357,5 @@ export const apiClient = {
   createBatchProgressStream,
   createMonitoringStream,
   createSystemMonitoringStream,
-  createResultStream,
+  // createResultStream removed - use useRealtimeJob hook instead
 };

@@ -16,7 +16,7 @@ def _count_active_jobs_for_batch(batch_job_id: str, job_manager) -> int:
     """
     Count jobs currently in 'processing' state for this batch.
 
-    Thread Safety: Uses job_manager.job_lock for safe access.
+    PHASE 4: Database-only mode - queries database for active jobs.
 
     Args:
         batch_job_id: Batch job identifier
@@ -25,14 +25,13 @@ def _count_active_jobs_for_batch(batch_job_id: str, job_manager) -> int:
     Returns:
         Number of jobs in 'processing' state
     """
+    # PHASE 4: Database-only mode
+    # For now, use thread count as a proxy for active jobs
+    # TODO: Implement proper database query for active jobs by batch_id
     active_count = 0
-    with job_manager.job_lock:
-        for job in job_manager.jobs.values():
-            # Check if job belongs to this batch and is processing
-            if (hasattr(job, 'parent_batch_id') and
-                job.parent_batch_id == batch_job_id and
-                job.status.value == 'processing'):
-                active_count += 1
+    # Count processing threads that might belong to this batch
+    # This is a conservative estimate until we implement proper DB queries
+    active_count = len(job_manager.processing_threads)
     return active_count
 
 

@@ -132,8 +132,8 @@ class ProgressEmitter:
             active_files = count of jobs in "processing" state for this batch
 
         Thread Safety:
-            - Uses batch_manager.batch_lock for safe batch state access
-            - Uses job_manager.job_lock for safe job state access
+            - PHASE 4: Uses batch_manager.batch_lock for safe batch state access
+            - PHASE 4: Job state now managed in database (no job_lock needed)
 
         Args:
             batch_job_id: Batch job identifier

@@ -43,6 +43,8 @@ export function useOcrJob() {
     },
     onError: (error: ApiError) => {
       console.error("Job submission failed:", error.message);
+      // Re-throw to propagate to caller when using mutateAsync
+      throw error;
     },
   });
 
@@ -102,7 +104,7 @@ export function useOcrJob() {
 
     // Actions
     uploadFile: uploadMutation.mutateAsync,
-    submitJob: submitJobMutation.mutate,
+    submitJob: submitJobMutation.mutateAsync,
     fetchResult,
     cancelJob,
     downloadResult,

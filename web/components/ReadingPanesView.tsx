@@ -4,35 +4,33 @@ import { useState, useEffect, useRef } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
-import { useStreamingResults } from "@/hooks/useStreamingResults";
+import { useRealtimeJob } from "@/hooks/useRealtimeJob";
+import { useRealtimeStreamingTokens } from "@/hooks/useRealtimeStreamingTokens";
 import { apiClient } from "@/lib/api-client";
+import type { JobResult } from "@/lib/types";
 
 // Configure PDF.js worker - use local copy to avoid CDN issues
 pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
 
 interface ReadingPanesViewProps {
   jobId: string | null;
-  enableStreaming?: boolean;
+  enableStreaming?: boolean; // Deprecated, kept for compatibility
 }
 
 export default function ReadingPanesView({
   jobId,
-  enableStreaming = true,
+  enableStreaming = true, // Ignored - Phase 4 always uses Realtime + result fetch
 }: ReadingPanesViewProps) {
-  const {
-    ocrPages,
-    mergePages,
-    ocrComplete,
-    mergeComplete,
-    jobComplete,
-    error: streamError,
-    deepseekLoading,
-    qwenLoading,
-    ocrModel,
-    mergeModel,
-    getFullOcrText,
-    getFullMergeText,
-  } = useStreamingResults(jobId, enableStreaming);
+  // PHASE 4: Use Realtime job subscription
+  const { job, isConnected, error: realtimeError } = useRealtimeJob(jobId);
+
+  // PHASE 4: Use Realtime streaming tokens subscription
+  const { pageTexts: streamingPageTexts, tokenCount, isConnected: streamingConnected } = useRealtimeStreamingTokens(jobId);
+
+  // Result state
+  const [result, setResult] = useState<JobResult | null>(null);
+  const [resultError, setResultError] = useState<string | null>(null);
+  const [isLoadingResult, setIsLoadingResult] = useState(false);
 
   const [numPages, setNumPages] = useState<number | null>(null);
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
@@ -41,18 +39,34 @@ export default function ReadingPanesView({
   const ocrTextRef = useRef<HTMLTextAreaElement>(null);
   const mergeTextRef = useRef<HTMLTextAreaElement>(null);
 
-  // Auto-scroll text areas to bottom as new content arrives
+  // PHASE 4: Fetch results when job completes
   useEffect(() => {
-    if (ocrTextRef.current) {
-      ocrTextRef.current.scrollTop = ocrTextRef.current.scrollHeight;
-    }
-  }, [ocrPages]);
+    if (!job || !jobId) return;
 
-  useEffect(() => {
-    if (mergeTextRef.current) {
-      mergeTextRef.current.scrollTop = mergeTextRef.current.scrollHeight;
+    if (job.status === "completed" && !result && !isLoadingResult) {
+      setIsLoadingResult(true);
+      setResultError(null);
+
+      apiClient.getJobResult(jobId)
+        .then((fetchedResult) => {
+          console.log("[ReadingPanesView] Fetched result:", fetchedResult);
+          setResult(fetchedResult);
+        })
+        .catch((error) => {
+          console.error("[ReadingPanesView] Failed to fetch result:", error);
+          setResultError(error.message || "Failed to load results");
+        })
+        .finally(() => {
+          setIsLoadingResult(false);
+        });
     }
-  }, [mergePages]);
+
+    // Reset result when job changes or is cancelled/failed
+    if (job.status === "cancelled" || job.status === "failed") {
+      setResult(null);
+      setResultError(job.status === "failed" ? job.error_message || "Job failed" : null);
+    }
+  }, [job, jobId, result, isLoadingResult]);
 
   // Load original file URL when job ID changes
   useEffect(() => {
@@ -91,38 +105,41 @@ export default function ReadingPanesView({
           <div className="flex items-center gap-2">
             <span>
               DeepSeek-OCR Output (Stage 1)
-              {ocrModel && <span className="text-xs text-gray-400 font-normal ml-2">({ocrModel})</span>}
+              {result?.result.model_used && (
+                <span className="text-xs text-gray-400 font-normal ml-2">({result.result.model_used})</span>
+              )}
             </span>
-            {deepseekLoading.isLoading && (
+            {job?.status === "processing" && job?.current_stage === "ocr" && (
               <div className="flex items-center gap-2 text-xs text-blue-400">
                 <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                 </svg>
-                <span>Loading model... {deepseekLoading.progress}%</span>
+                <span>Processing OCR...</span>
+              </div>
+            )}
+            {isLoadingResult && (
+              <div className="flex items-center gap-2 text-xs text-blue-400">
+                <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <span>Loading results...</span>
               </div>
             )}
           </div>
           <div className="flex items-center gap-3">
-            {deepseekLoading.isLoading && deepseekLoading.gpuAllocation && (
-              <span className="text-xs text-purple-400">
-                {deepseekLoading.gpuAllocation.single_gpu
-                  ? `GPU ${deepseekLoading.gpuAllocation.primary_device?.replace('cuda:', '') || '0'}`
-                  : `GPUs ${deepseekLoading.gpuAllocation.devices?.map((d: string) => d.replace('cuda:', '')).join(', ') || '0,1'}`
-                }
-              </span>
-            )}
             <span className="text-xs text-gray-400">
-              {ocrComplete ? "Complete" : `${ocrPages.size} pages`}
+              {result ? "Complete" : job?.status === "completed" ? "Loading..." : "Waiting"}
             </span>
           </div>
         </div>
         <textarea
           ref={ocrTextRef}
           className="flex-1 p-3 font-mono text-sm resize-none focus:outline-none bg-gray-800 text-gray-100 border-0"
-          value={getFullOcrText()}
+          value={result?.result.deepseek_ocr_content || ""}
           readOnly
-          placeholder="OCR output will appear here as pages complete..."
+          placeholder="OCR output will appear here after processing completes..."
         />
       </div>
 
@@ -131,39 +148,38 @@ export default function ReadingPanesView({
         <div className="px-3 py-2 border-b border-gray-700 bg-gray-900 font-medium text-sm flex items-center justify-between text-gray-200">
           <div className="flex items-center gap-2">
             <span>
-              Merged Output (Stage 2 - Qwen3-VL)
-              {mergeModel && <span className="text-xs text-gray-400 font-normal ml-2">({mergeModel})</span>}
+              Merged Output (Stage 2)
+              {result?.result.model_used && (
+                <span className="text-xs text-gray-400 font-normal ml-2">({result.result.model_used})</span>
+              )}
             </span>
-            {qwenLoading.isLoading && (
+            {job?.status === "processing" && job?.current_stage === "merge" && (
               <div className="flex items-center gap-2 text-xs text-blue-400">
                 <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                 </svg>
-                <span>Loading model... {qwenLoading.progress}%</span>
+                <span>Streaming... ({tokenCount} tokens)</span>
               </div>
             )}
           </div>
           <div className="flex items-center gap-3">
-            {qwenLoading.isLoading && qwenLoading.gpuAllocation && (
-              <span className="text-xs text-purple-400">
-                {qwenLoading.gpuAllocation.single_gpu
-                  ? `GPU ${qwenLoading.gpuAllocation.primary_device?.replace('cuda:', '') || '0'}`
-                  : `GPUs ${qwenLoading.gpuAllocation.devices?.map((d: string) => d.replace('cuda:', '')).join(', ') || '0,1'}`
-                }
-              </span>
-            )}
             <span className="text-xs text-gray-400">
-              {mergeComplete ? "Complete" : `${mergePages.size} pages`}
+              {result ? "Complete" : job?.status === "completed" ? "Loading..." : job?.status === "processing" && job?.current_stage === "merge" ? "Streaming" : "Waiting"}
             </span>
           </div>
         </div>
         <textarea
           ref={mergeTextRef}
           className="flex-1 p-3 font-mono text-sm resize-none focus:outline-none bg-gray-800 text-gray-100 border-0"
-          value={getFullMergeText()}
+          value={
+            // Show streaming tokens during merge stage, otherwise show final result
+            job?.status === "processing" && job?.current_stage === "merge"
+              ? Array.from(streamingPageTexts.values()).join("\n\n")
+              : result?.result.content || ""
+          }
           readOnly
-          placeholder="Merged output will appear here as pages complete..."
+          placeholder="Merged output will appear here during processing..."
         />
       </div>
 
@@ -212,9 +228,10 @@ export default function ReadingPanesView({
       </div>
 
       {/* Error Display */}
-      {streamError && (
+      {(realtimeError || resultError) && (
         <div className="px-4 py-2 bg-red-900/50 border border-red-700 rounded text-red-300 text-sm">
-          Stream error: {streamError}
+          {realtimeError && <div>Realtime error: {realtimeError.message}</div>}
+          {resultError && <div>Result error: {resultError}</div>}
         </div>
       )}
     </div>

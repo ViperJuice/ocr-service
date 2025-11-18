@@ -56,7 +56,7 @@ export class LlmResponseParser {
   ExtractTextOCR(
       llmResponse: string,
       __baml_options__?: { tb?: TypeBuilder, clientRegistry?: ClientRegistry, env?: Record<string, string | undefined> }
-  ): types.OCRResult {
+  ): string {
     try {
       const rawEnv = __baml_options__?.env ? { ...process.env, ...__baml_options__.env } : { ...process.env };
       const env: Record<string, string> = Object.fromEntries(
@@ -70,7 +70,7 @@ export class LlmResponseParser {
         __baml_options__?.tb?.__tb(),
         __baml_options__?.clientRegistry,
         env,
-      ) as types.OCRResult
+      ) as string
     } catch (error) {
       throw toBamlError(error);
     }
@@ -125,7 +125,7 @@ export class LlmResponseParser {
   MergeTexts(
       llmResponse: string,
       __baml_options__?: { tb?: TypeBuilder, clientRegistry?: ClientRegistry, env?: Record<string, string | undefined> }
-  ): types.OCRResult {
+  ): string {
     try {
       const rawEnv = __baml_options__?.env ? { ...process.env, ...__baml_options__.env } : { ...process.env };
       const env: Record<string, string> = Object.fromEntries(
@@ -139,7 +139,7 @@ export class LlmResponseParser {
         __baml_options__?.tb?.__tb(),
         __baml_options__?.clientRegistry,
         env,
-      ) as types.OCRResult
+      ) as string
     } catch (error) {
       throw toBamlError(error);
     }
@@ -200,7 +200,7 @@ export class LlmStreamParser {
   ExtractTextOCR(
       llmResponse: string,
       __baml_options__?: { tb?: TypeBuilder, clientRegistry?: ClientRegistry, env?: Record<string, string | undefined> }
-  ): partial_types.OCRResult {
+  ): string {
     try {
       const rawEnv = __baml_options__?.env ? { ...process.env, ...__baml_options__.env } : { ...process.env };
       const env: Record<string, string> = Object.fromEntries(
@@ -214,7 +214,7 @@ export class LlmStreamParser {
         __baml_options__?.tb?.__tb(),
         __baml_options__?.clientRegistry,
         env,
-      ) as partial_types.OCRResult
+      ) as string
     } catch (error) {
       throw toBamlError(error);
     }
@@ -269,7 +269,7 @@ export class LlmStreamParser {
   MergeTexts(
       llmResponse: string,
       __baml_options__?: { tb?: TypeBuilder, clientRegistry?: ClientRegistry, env?: Record<string, string | undefined> }
-  ): partial_types.OCRResult {
+  ): string {
     try {
       const rawEnv = __baml_options__?.env ? { ...process.env, ...__baml_options__.env } : { ...process.env };
       const env: Record<string, string> = Object.fromEntries(
@@ -283,7 +283,7 @@ export class LlmStreamParser {
         __baml_options__?.tb?.__tb(),
         __baml_options__?.clientRegistry,
         env,
-      ) as partial_types.OCRResult
+      ) as string
     } catch (error) {
       throw toBamlError(error);
     }

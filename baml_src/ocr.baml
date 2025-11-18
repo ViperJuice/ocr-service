@@ -3,7 +3,7 @@
 
 // ==================== OCR Extraction ====================
 
-function ExtractTextOCR(page_image: image, custom_prompt: string?) -> OCRResult {
+function ExtractTextOCR(page_image: image, custom_prompt: string?) -> string {
   client DeepSeekOCR
   prompt #"
     {{ _.role("user") }}
@@ -18,8 +18,6 @@ function ExtractTextOCR(page_image: image, custom_prompt: string?) -> OCRResult 
     {% endif %}
 
     {{ page_image }}
-
-    {{ ctx.output_format }}
   "#
 }
 
@@ -30,7 +28,7 @@ function MergeTexts(
   embedded_text: string,
   ocr_text: string,
   custom_prompt: string?
-) -> OCRResult {
+) -> string {
   client QWEN3VL8B
   prompt #"
     {{ _.role("user") }}
@@ -65,8 +63,6 @@ function MergeTexts(
 
     Reference image:
     {{ page_image }}
-
-    {{ ctx.output_format }}
   "#
 }
 

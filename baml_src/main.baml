@@ -21,6 +21,7 @@ generator typescript_target {
 
 // DeepSeek-OCR Container (OpenAI-compatible)
 // Specialized for high-quality OCR extraction
+// Note: openai-generic appends /chat/completions, so DEEPSEEK_URL must include /v1
 client<llm> DeepSeekOCR {
   provider "openai-generic"
   options {
@@ -34,6 +35,7 @@ client<llm> DeepSeekOCR {
 
 // QWEN3-VL 8B Container (OpenAI-compatible)
 // Used for merging and visual formatting with streaming support
+// Note: openai-generic appends /chat/completions, so QWEN_URL must include /v1
 client<llm> QWEN3VL8B {
   provider "openai-generic"
   options {

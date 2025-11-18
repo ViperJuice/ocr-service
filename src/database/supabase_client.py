@@ -1,7 +1,7 @@
 """Supabase client initialization and management."""
 import os
 from typing import Optional
-from supabase import create_client, Client
+from supabase import create_client, Client, acreate_client, AsyncClient
 from postgrest import APIError
 import logging
 
@@ -21,6 +21,7 @@ class SupabaseClient:
         self.url = url
         self.service_key = service_key
         self._client: Optional[Client] = None
+        self._async_client: Optional[AsyncClient] = None
 
     def connect(self) -> Client:
         """Connect to Supabase and return client.
@@ -34,6 +35,18 @@ class SupabaseClient:
             logger.info("✅ Supabase client connected")
         return self._client
 
+    async def async_connect(self) -> AsyncClient:
+        """Connect to Supabase and return async client.
+
+        Returns:
+            Connected Async Supabase client instance
+        """
+        if self._async_client is None:
+            logger.info(f"Connecting async client to Supabase at {self.url}")
+            self._async_client = await acreate_client(self.url, self.service_key)
+            logger.info("✅ Supabase async client connected")
+        return self._async_client
+
     @property
     def client(self) -> Client:
         """Get connected client (lazy connect).
@@ -45,6 +58,17 @@ class SupabaseClient:
             return self.connect()
         return self._client
 
+    @property
+    async def async_client(self) -> AsyncClient:
+        """Get connected async client (lazy connect).
+
+        Returns:
+            Async Supabase client instance
+        """
+        if self._async_client is None:
+            return await self.async_connect()
+        return self._async_client
+
     def disconnect(self):
         """Close connection (cleanup on shutdown)."""
         # Supabase Python client doesn't require explicit cleanup,
@@ -52,6 +76,9 @@ class SupabaseClient:
         if self._client:
             logger.info("Disconnecting from Supabase")
             self._client = None
+        if self._async_client:
+            logger.info("Disconnecting async client from Supabase")
+            self._async_client = None
 
 
 # Global client instance (initialized in main.py lifespan)
